@@ -21,6 +21,7 @@ class Segment:
     end: float
     speaker: str | None = None
     words: list[Word] = field(default_factory=list)
+    language: str | None = None  # set when a recording mixes languages
 
 
 @dataclass

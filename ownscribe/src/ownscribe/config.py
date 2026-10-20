@@ -24,6 +24,7 @@ silence_timeout = 300     # seconds of silence before auto-stop; 0 = disabled
 backend = "whisperx"      # "whisperx" (CPU) or "mlx" (Apple Silicon GPU; needs ownscribe[mlx])
 model = "base"            # whisper model: tiny, base, small, medium, large-v3, large-v3-turbo (mlx)
 language = ""             # empty = auto-detect
+# languages = ["en", "es"]  # calls that switch between these: detect per stretch of speech (mlx backend)
 threads = 0               # CPU threads for transcription; 0 = auto-detect from core count
 # initial_prompt = ""     # prime Whisper with context: domain vocab, speaker names, expected phrases
 # hotwords = ""           # comma-separated words to boost recognition (softer hint than initial_prompt)
@@ -85,6 +86,14 @@ class TranscriptionConfig:
     backend: str = "whisperx"  # "whisperx" or "mlx"
     model: str = "base"
     language: str = ""
+    # Two or more codes (e.g. ["en", "es"]): the language is detected separately for each
+    # stretch of speech, choosing only among these (mlx backend).
+    languages: list[str] = field(default_factory=list)
+
+    @property
+    def mixed_languages(self) -> list[str]:
+        codes = [c.strip().lower() for c in self.languages if c and c.strip()]
+        return list(dict.fromkeys(codes)) if len(set(codes)) > 1 else []
     initial_prompt: str = ""
     hotwords: str = ""
     threads: int = 0  # CPU threads for transcription; 0 = auto-detect from core count

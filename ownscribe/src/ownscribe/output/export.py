@@ -74,6 +74,9 @@ def format_export(
         front.append(f"source: {_yaml(source)}")
     if speakers:
         front.append("speakers: [" + ", ".join(_yaml(s) for s in speakers) + "]")
+    languages = list(dict.fromkeys(seg.language for seg in result.segments if seg.language))
+    if len(languages) > 1:
+        front.append("languages: [" + ", ".join(_yaml(code) for code in languages) + "]")
     front.append("tags: [meeting-notes]")
     front.append("---")
 

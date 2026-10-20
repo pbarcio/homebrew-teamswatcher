@@ -10,8 +10,10 @@ silence_timeout = 300      # safety net; TeamsWatcher normally stops it when the
 [transcription]
 backend = "mlx"            # Whisper on the Apple Silicon GPU; "whisperx" = the slower CPU backend
 model = "large-v3-turbo"   # fast and accurate on the GPU; "medium" if you want it lighter
-language = "en"
-# Prime Whisper with vocabulary it would otherwise mangle:
+language = ""              # not fixed: see languages
+languages = ["en", "es"]   # calls can switch between English and Spanish at any point; each stretch
+                           # of speech is transcribed in its own language. Use ["en"] for English only.
+# Prime Whisper with vocabulary it would otherwise mangle (product names are the same in both languages):
 initial_prompt = "Manhattan Active Warehouse Management, MAWM, webMethods Integration Server, MIF, Google Cloud Pub/Sub, MuleSoft, Boomi."
 hotwords = "MAWM, webMethods, Pub/Sub, MuleSoft, Boomi"
 

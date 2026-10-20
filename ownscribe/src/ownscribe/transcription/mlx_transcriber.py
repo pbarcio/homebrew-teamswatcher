@@ -88,6 +88,8 @@ class MlxWhisperTranscriber(Transcriber):
             raise
 
     def transcribe(self, audio_path: Path) -> TranscriptResult:
+        if self._tx_config.mixed_languages:
+            return self._transcribe_mixed(audio_path)
         if not shutil.which("ffmpeg"):
             click.echo("Error: ffmpeg is not installed. Install with: brew install ffmpeg", err=True)
             raise SystemExit(1)
@@ -120,6 +122,65 @@ class MlxWhisperTranscriber(Transcriber):
             raise
         progress.complete("transcribing")
         return _to_result(result, _duration(audio_path))
+
+    def _transcribe_mixed(self, audio_path: Path) -> TranscriptResult:
+        """Transcribe a recording that switches languages, detecting the language per stretch."""
+        if not shutil.which("ffmpeg"):
+            click.echo("Error: ffmpeg is not installed. Install with: brew install ffmpeg", err=True)
+            raise SystemExit(1)
+        try:
+            import mlx.core as mx
+            import mlx_whisper
+            from mlx_whisper.audio import N_FRAMES, N_SAMPLES, SAMPLE_RATE, load_audio, log_mel_spectrogram, pad_or_trim
+            from mlx_whisper.transcribe import ModelHolder
+        except ImportError:
+            click.echo(f"Error: {_INSTALL_HINT}", err=True)
+            raise SystemExit(1) from None
+
+        from ownscribe.transcription.multilingual import transcribe_multilingual
+
+        languages = self._tx_config.mixed_languages
+        prompt = _prompt(self._tx_config)
+        progress = self._progress
+        progress.begin("transcribing")
+        self._set_detail("transcribing", f"{audio_path.name}: {' + '.join(languages)} on the GPU")
+
+        def detect(clip):
+            model = ModelHolder.get_model(self._repo, mx.float16)
+            mel = log_mel_spectrogram(clip, n_mels=model.dims.n_mels, padding=N_SAMPLES)
+            _, probs = model.detect_language(pad_or_trim(mel, N_FRAMES, axis=-2).astype(mx.float16))
+            return probs
+
+        def transcribe_window(clip, language):
+            result = mlx_whisper.transcribe(
+                clip,
+                path_or_hf_repo=self._repo,
+                verbose=None,
+                language=language,
+                initial_prompt=prompt,
+                condition_on_previous_text=False,
+                word_timestamps=False,
+            )
+            return _to_result(result).segments
+
+        try:
+            with warnings.catch_warnings(), contextlib.redirect_stderr(io.StringIO()):
+                warnings.simplefilter("ignore")
+                logging.getLogger("mlx_whisper").setLevel(logging.WARNING)
+                samples = load_audio(str(audio_path))
+                result = transcribe_multilingual(
+                    samples,
+                    SAMPLE_RATE,
+                    languages,
+                    detect,
+                    transcribe_window,
+                    on_progress=lambda fraction: progress.update("transcribing", fraction),
+                )
+        except Exception:
+            progress.fail("transcribing")
+            raise
+        progress.complete("transcribing")
+        return result
 
 
 def _duration(audio_path: Path) -> float | None:

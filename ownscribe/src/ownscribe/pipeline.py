@@ -155,6 +155,14 @@ def _create_transcriber(config: Config, progress=None):
 
     from ownscribe.transcription.whisperx_transcriber import WhisperXTranscriber
 
+    if config.transcription.mixed_languages:
+        click.echo(
+            "Warning: switching between languages within a call needs the mlx backend; "
+            "detecting one language per recording instead.",
+            err=True,
+        )
+        config.transcription.language = ""
+
     diar_config = config.diarization if config.diarization.enabled else None
     return WhisperXTranscriber(
         config.transcription,

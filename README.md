@@ -10,6 +10,7 @@ Requires an Apple Silicon Mac with macOS 14.2 or later.
 
 - **A transcript labeled you vs. them.** Your mic and the call audio are recorded as separate tracks, so every line is attributed to you (your macOS name) or "Them". No speaker-recognition model or account is needed.
 - **Fast, local transcription.** Whisper large-v3-turbo runs on the Mac's GPU.
+- **English and Spanish, mixed freely.** People can switch languages at any point; each stretch of speech is transcribed in the language it was spoken in.
 - **A notes file ready to upload to Glean.** It holds the title, date, duration, app and speakers, then the summary (if on) and the transcript.
 - **A notification when it's done.** Clicking it opens Finder at that recording's folder, with the notes selected.
 
@@ -99,6 +100,15 @@ Recording starts once the app has held the mic for **10 seconds**, which keeps d
 
 **Use a headset when you can.** On laptop speakers, your mic also picks up the other side. Lines the mic picked up from the call are filtered out, but a headset gives the cleanest result.
 
+## Languages
+
+Calls can switch between English and Spanish at any moment, mid-conversation or person to person. Each track is split at natural pauses, the language of every stretch of speech is detected (choosing only between English and Spanish), and each stretch is transcribed in that language. The notes file lists `languages: ["en", "es"]` when both were spoken.
+
+- Very short replies like "sí" or "OK" keep the language of the surrounding conversation, unless they're clearly the other one.
+- A switch in the middle of a sentence, with no pause, is transcribed in whichever language most of that stretch was in.
+- The summary is written in English, covering both languages.
+- To change the languages, edit `languages` in `~/.config/ownscribe/config.toml`, e.g. `["en", "es", "pt"]`, or `["en"]` for English-only calls. Mixed-language calls need the default GPU (`mlx`) backend.
+
 ## Settings
 
 **Transcription settings** are in `~/.config/ownscribe/config.toml`. Setup never overwrites edits you've made there. If the defaults change in a later release, the new defaults are saved alongside as `config.toml.new` for you to merge.
@@ -107,7 +117,8 @@ Recording starts once the app has held the mic for **10 seconds**, which keeps d
 |---|---|---|
 | `[speakers] me` | your macOS name | Your label in transcripts |
 | `[speakers] them` | `Them` | Label for everyone else |
-| `[transcription] model` | `large-v3-turbo` | `medium` is lighter; `backend = "whisperx"` uses the CPU instead of the GPU |
+| `[transcription] languages` | `["en", "es"]` | Languages a call may switch between (see Languages) |
+| `[transcription] model` | `large-v3-turbo` | `medium` is lighter; `backend = "whisperx"` uses the CPU instead of the GPU, with one language per recording |
 | `[transcription] initial_prompt`, `hotwords` | integration terms | Vocabulary Whisper would otherwise mishear |
 | `[export] copy_to` | off | Also copy each notes file to a folder; `"auto"` = a "Meeting Notes" folder in your work OneDrive (which syncs to the cloud) |
 | `[export] include_transcript` | true | Include the transcript in the notes file |

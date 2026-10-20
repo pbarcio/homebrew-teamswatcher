@@ -85,3 +85,18 @@ def test_pipeline_picks_mlx_backend():
     config = Config()
     config.transcription.backend = "mlx"
     assert isinstance(_create_transcriber(config), MlxWhisperTranscriber)
+
+
+def test_whisperx_backend_falls_back_to_auto_detect_for_mixed_languages(capsys):
+    from unittest import mock
+
+    from ownscribe.pipeline import _create_transcriber
+
+    config = Config()
+    config.transcription.backend = "whisperx"
+    config.transcription.language = "en"
+    config.transcription.languages = ["en", "es"]
+    with mock.patch("ownscribe.transcription.whisperx_transcriber.WhisperXTranscriber"):
+        _create_transcriber(config)
+    assert config.transcription.language == ""
+    assert "needs the mlx backend" in capsys.readouterr().err

@@ -136,7 +136,12 @@ def merge_tracks(me: TranscriptResult | None, them: TranscriptResult | None) -> 
     """Interleave labelled segments from both tracks by start time."""
     segments = [*(me.segments if me else []), *(them.segments if them else [])]
     segments.sort(key=lambda seg: (seg.start, seg.end))
-    language = (them.language if them and them.language else "") or (me.language if me else "")
+    codes: list[str] = []
+    for result in (them, me):
+        for code in (result.language if result else "").split(","):
+            if code.strip() and code.strip() not in codes:
+                codes.append(code.strip())
+    language = ", ".join(codes)
     duration = max(me.duration if me else 0.0, them.duration if them else 0.0)
     return TranscriptResult(segments=segments, language=language, duration=duration)
 

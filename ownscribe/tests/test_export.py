@@ -98,3 +98,17 @@ class TestWrite:
         assert first.read_text() == "one"
         assert second.name == "a (2).md"
         assert second.read_text() == "two"
+
+
+def test_languages_in_front_matter_for_mixed_calls():
+    result = TranscriptResult(
+        segments=[
+            Segment(text="Hello.", start=0.0, end=1.0, speaker="Them", language="en"),
+            Segment(text="Hola.", start=1.0, end=2.0, speaker="Them", language="es"),
+        ],
+        duration=2.0,
+    )
+    text = format_export(title="Sync", started=datetime(2026, 10, 19, 14, 5), result=result, summary=None)
+    assert 'languages: ["en", "es"]' in text.splitlines()
+    single = format_export(title="Sync", started=datetime(2026, 10, 19, 14, 5), result=_result(), summary=None)
+    assert "languages:" not in single
