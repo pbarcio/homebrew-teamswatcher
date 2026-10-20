@@ -1,0 +1,41 @@
+class Teamswatcher < Formula
+  desc "Auto-records Microsoft Teams calls and transcribes them locally with ownscribe"
+  homepage "https://github.com/OWNER/homebrew-teamswatcher"
+  url "https://github.com/OWNER/homebrew-teamswatcher/archive/refs/tags/v0.0.0.tar.gz"
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  license "MIT"
+  head "https://github.com/OWNER/homebrew-teamswatcher.git", branch: "main"
+
+  depends_on arch: :arm64
+  depends_on macos: :sonoma
+  depends_on "ffmpeg"
+  depends_on "uv"
+
+  def install
+    system "./build.sh"
+    prefix.install "build/TeamsWatcher.app"
+    pkgshare.install "ownscribe-config.toml"
+
+    inreplace "teamswatcher-setup", "@@PREFIX@@", opt_prefix.to_s
+    bin.install "teamswatcher-setup"
+    bin.install "uninstall.sh" => "teamswatcher-uninstall"
+  end
+
+  def caveats
+    <<~EOS
+      Finish setup with:
+        teamswatcher-setup
+
+      It installs ownscribe, writes its config, downloads the models, puts
+      TeamsWatcher.app in /Applications (or ~/Applications) and adds it to
+      Login Items. Re-run it after every `brew upgrade teamswatcher`.
+
+      To remove everything: teamswatcher-uninstall, then brew uninstall teamswatcher
+    EOS
+  end
+
+  test do
+    assert_predicate prefix/"TeamsWatcher.app/Contents/MacOS/TeamsWatcher", :executable?
+    assert_match "teamswatcher-setup", shell_output("#{bin}/teamswatcher-setup --help")
+  end
+end

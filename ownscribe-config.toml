@@ -1,0 +1,31 @@
+# Suggested ~/.config/ownscribe/config.toml for an M1 MacBook Pro with 32GB, fully local.
+# Merge into the file `ownscribe config` creates rather than replacing it blindly.
+
+[audio]
+backend = "coreaudio"
+mic = true
+capture_mode = "all"       # TeamsWatcher narrows this to Teams with --pid when it can
+silence_timeout = 300      # safety net; TeamsWatcher normally stops it when the call ends
+
+[transcription]
+model = "medium"           # faster-whisper runs on CPU on Apple Silicon; try "large-v3" if speed is OK
+language = "en"            # skips auto-detect and lets warmup fetch the English alignment model
+# Prime Whisper with vocabulary it would otherwise mangle:
+initial_prompt = "Manhattan Active Warehouse Management, MAWM, webMethods Integration Server, MIF, Google Cloud Pub/Sub, MuleSoft, Boomi."
+hotwords = "MAWM, webMethods, Pub/Sub, MuleSoft, Boomi"
+
+[diarization]
+enabled = false            # speaker labels off: they'd only be SPEAKER_00/01 without real names
+
+[summarization]
+enabled = true
+backend = "local"          # built-in llama.cpp; never calls an external service
+# Mid-size local model: Llama 3.1 8B Instruct, Q4_K_M (~4.9GB file, ~6GB in use with 16k context).
+# Downloads once on first run or `ownscribe warmup`; inference stays on the Mac.
+model = "hf:bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
+context_size = 16384
+
+[output]
+dir = "~/ownscribe"
+format = "markdown"
+keep_recording = true

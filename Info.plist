@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>net.barcio.teamswatcher</string>
+    <key>CFBundleName</key>
+    <string>TeamsWatcher</string>
+    <key>CFBundleDisplayName</key>
+    <string>TeamsWatcher</string>
+    <key>CFBundleExecutable</key>
+    <string>TeamsWatcher</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.2</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>TeamsWatcher launches ownscribe to record your side of Teams calls for local transcription.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>TeamsWatcher launches ownscribe to capture Teams call audio for local transcription.</string>
+</dict>
+</plist>

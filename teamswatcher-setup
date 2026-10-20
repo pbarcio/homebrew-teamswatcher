@@ -1,0 +1,174 @@
+#!/bin/bash
+# teamswatcher-setup: sets up ownscribe + TeamsWatcher on Apple Silicon (macOS 14.2+).
+#
+#   teamswatcher-setup            install or repair everything
+#   teamswatcher-setup --upgrade  also upgrade ownscribe to the latest release
+#   teamswatcher-setup --rebuild  reinstall the app even if unchanged (you'll re-grant permissions)
+#
+# Works from a Homebrew install (brew install teamswatcher) or a git checkout (./install.sh).
+# Safe to re-run: it backs up your ownscribe config before replacing it, and only replaces
+# the app when it changed, so macOS permissions survive. No accounts or tokens needed.
+set -euo pipefail
+
+APP_NAME="TeamsWatcher"
+OWN_CONFIG="$HOME/.config/ownscribe/config.toml"
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+step() { printf '\n\033[1;34m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
+warn() { printf '\033[1;33mWarning:\033[0m %s\n' "$*"; }
+die()  { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
+
+UPGRADE=0
+FORCE_REBUILD=0
+for arg in "$@"; do
+  case "$arg" in
+    --upgrade) UPGRADE=1 ;;
+    --rebuild) FORCE_REBUILD=1 ;;
+    -h|--help) awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"; exit 0 ;;
+    *) die "Unknown option: $arg (try --help)" ;;
+  esac
+done
+
+# Where the app and config template come from. The Homebrew formula fills in BREW_PREFIX;
+# from a git checkout it stays unset and the app is built from source next to this script.
+BREW_PREFIX="@@PREFIX@@"
+if [[ -d "$BREW_PREFIX/$APP_NAME.app" ]]; then
+  MODE="brew"
+  SRC_APP="$BREW_PREFIX/$APP_NAME.app"
+  CONFIG_TEMPLATE="$BREW_PREFIX/share/teamswatcher/ownscribe-config.toml"
+else
+  MODE="source"
+  SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  SRC_APP="$SRC_DIR/build/$APP_NAME.app"
+  CONFIG_TEMPLATE="$SRC_DIR/ownscribe-config.toml"
+fi
+[[ -f "$CONFIG_TEMPLATE" ]] || die "Config template not found at $CONFIG_TEMPLATE"
+
+# Install to /Applications when we can write there, otherwise ~/Applications (no admin needed).
+if [[ -w /Applications ]]; then APP_DIR="/Applications"; else APP_DIR="$HOME/Applications"; fi
+APP_DEST="$APP_DIR/$APP_NAME.app"
+
+# ---------------------------------------------------------------------------
+step "Checking this Mac"
+[[ "$(uname -m)" == "arm64" ]] || die "Apple Silicon is required."
+os_ver="$(sw_vers -productVersion)"
+IFS=. read -r major minor _ <<< "$os_ver"
+minor="${minor:-0}"
+if (( major < 14 )) || { (( major == 14 )) && (( minor < 2 )); }; then
+  die "macOS 14.2 or later is required (found $os_ver)."
+fi
+xcode-select -p >/dev/null 2>&1 || die "Xcode Command Line Tools are missing. Run: xcode-select --install"
+if pgrep -f "$HOME/.local/bin/ownscribe" >/dev/null 2>&1; then
+  die "ownscribe is recording or processing right now. Re-run when it has finished."
+fi
+echo "macOS $os_ver on Apple Silicon: OK"
+
+# ---------------------------------------------------------------------------
+step "Checking uv and ffmpeg"
+for tool in uv ffmpeg; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    echo "$tool: installed"
+  else
+    command -v brew >/dev/null 2>&1 || die "$tool is missing and Homebrew isn't installed. Get Homebrew from https://brew.sh."
+    brew install "$tool"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+step "Installing ownscribe"
+if uv tool list 2>/dev/null | grep -q '^ownscribe '; then
+  if (( UPGRADE )); then uv tool upgrade ownscribe; else echo "ownscribe: already installed (use --upgrade to update)"; fi
+else
+  uv tool install ownscribe
+fi
+uv tool update-shell >/dev/null 2>&1 || true
+command -v ownscribe >/dev/null 2>&1 || die "ownscribe isn't on PATH after install (expected in ~/.local/bin)."
+
+if ! ownscribe --help 2>/dev/null | grep -q -- '--pid'; then
+  warn "ownscribe --help doesn't list --pid. Set \"pidFlag\" in ~/.config/teamswatcher/config.json, or set \"captureTeamsAudioOnly\" to false."
+fi
+
+# ---------------------------------------------------------------------------
+step "Writing ownscribe config"
+# Remember which defaults we last installed, so later runs can tell your own edits
+# apart from an outdated default and never overwrite edits silently.
+last_template="$(dirname "$OWN_CONFIG")/.teamswatcher-defaults.toml"
+mkdir -p "$(dirname "$OWN_CONFIG")"
+if [[ ! -f "$OWN_CONFIG" ]]; then
+  cp "$CONFIG_TEMPLATE" "$OWN_CONFIG"
+  echo "Config written to $OWN_CONFIG"
+elif cmp -s "$CONFIG_TEMPLATE" "$OWN_CONFIG"; then
+  echo "Config already up to date."
+elif [[ ! -f "$last_template" ]]; then
+  # First run over a config we didn't write: keep a backup, then use our defaults.
+  backup="$OWN_CONFIG.bak-$(date +%Y%m%d-%H%M%S)"
+  cp "$OWN_CONFIG" "$backup"
+  cp "$CONFIG_TEMPLATE" "$OWN_CONFIG"
+  echo "Backed up your existing config to $backup and wrote the TeamsWatcher defaults."
+elif cmp -s "$last_template" "$OWN_CONFIG"; then
+  cp "$CONFIG_TEMPLATE" "$OWN_CONFIG"
+  echo "Config updated to the new defaults (you hadn't edited it)."
+elif cmp -s "$last_template" "$CONFIG_TEMPLATE"; then
+  echo "Keeping your edited config."
+else
+  cp "$CONFIG_TEMPLATE" "$OWN_CONFIG.new"
+  warn "The default config changed, and you've edited yours, so it was left alone. New defaults are in $OWN_CONFIG.new; merge anything you want."
+fi
+cp "$CONFIG_TEMPLATE" "$last_template"
+
+# ---------------------------------------------------------------------------
+step "Downloading models (quick if they're already cached)"
+ownscribe warmup --language en
+
+# ---------------------------------------------------------------------------
+step "Installing $APP_NAME"
+if [[ "$MODE" == "source" ]]; then
+  src_hash="$(cat "$SRC_DIR/main.swift" "$SRC_DIR/Info.plist" | shasum -a 256 | cut -c1-16)"
+else
+  src_hash="$(cat "$SRC_APP/Contents/Resources/source-hash" 2>/dev/null || echo unknown)"
+fi
+installed_hash="$(cat "$APP_DEST/Contents/Resources/source-hash" 2>/dev/null || true)"
+replaced=0
+if [[ "$src_hash" == "$installed_hash" ]] && (( ! FORCE_REBUILD )); then
+  echo "$APP_NAME is up to date; leaving it alone so your macOS permissions stay granted."
+else
+  if [[ "$MODE" == "source" ]]; then "$SRC_DIR/build.sh"; fi
+  if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+    osascript -e "quit app \"$APP_NAME\"" >/dev/null 2>&1 || pkill -x "$APP_NAME" || true
+    sleep 1
+  fi
+  mkdir -p "$APP_DIR"
+  rm -rf "$APP_DEST"
+  cp -R "$SRC_APP" "$APP_DEST"
+  echo "Installed to $APP_DEST"
+  replaced=1
+fi
+pgrep -x "$APP_NAME" >/dev/null 2>&1 || open "$APP_DEST"
+
+# ---------------------------------------------------------------------------
+step "Adding $APP_NAME to Login Items"
+if osascript -e 'tell application "System Events" to get the name of every login item' 2>/dev/null | grep -q "$APP_NAME"; then
+  echo "Already a login item."
+elif osascript -e "tell application \"System Events\" to make login item at end with properties {path:\"$APP_DEST\", hidden:true}" >/dev/null 2>&1; then
+  echo "Added. It will start automatically when you log in."
+else
+  warn "Couldn't add it automatically. Add it in System Settings > General > Login Items."
+fi
+
+# ---------------------------------------------------------------------------
+step "Done"
+if (( replaced )); then
+  cat <<EOF
+$APP_NAME was installed fresh, so macOS needs to approve it once:
+
+  1. Click the waveform icon in the menu bar and choose "Start Recording Now".
+  2. Allow the Microphone and Screen & System Audio Recording prompts.
+     (If no prompt appears, enable $APP_NAME in System Settings > Privacy & Security
+     under both. If an older entry is listed, toggle it off and on.)
+  3. Choose "Stop Recording", then quit $APP_NAME from its menu and reopen it.
+
+After that it records Teams calls automatically.
+EOF
+else
+  echo "Everything is installed and $APP_NAME is running."
+fi
