@@ -1,10 +1,10 @@
 class Teamswatcher < Formula
-  desc "Auto-records Microsoft Teams calls and transcribes them locally with ownscribe"
-  homepage "https://github.com/pbarcio/homebrew-teamswatcher"
-  url "https://github.com/pbarcio/homebrew-teamswatcher/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "209fefb6e5da41ee134c7319a780a9b602c9bb2ded9f5210649f158acb88e39f"
+  desc "Auto-records Teams, Zoom and Webex calls and transcribes them locally"
+  homepage "https://github.com/OWNER/homebrew-teamswatcher"
+  url "https://github.com/OWNER/homebrew-teamswatcher/archive/refs/tags/v0.0.0.tar.gz"
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
-  head "https://github.com/pbarcio/homebrew-teamswatcher.git", branch: "main"
+  head "https://github.com/OWNER/homebrew-teamswatcher.git", branch: "main"
 
   depends_on arch: :arm64
   depends_on macos: :sonoma
@@ -14,7 +14,8 @@ class Teamswatcher < Formula
   def install
     system "./build.sh"
     prefix.install "build/TeamsWatcher.app"
-    pkgshare.install "ownscribe-config.toml"
+    # The bundled ownscribe fork; teamswatcher-setup installs it and builds its audio helper.
+    pkgshare.install "ownscribe-config.toml", "ownscribe"
 
     inreplace "teamswatcher-setup", "@@PREFIX@@", opt_prefix.to_s
     bin.install "teamswatcher-setup"
@@ -26,7 +27,8 @@ class Teamswatcher < Formula
       Finish setup with:
         teamswatcher-setup
 
-      It installs ownscribe, writes its config, downloads the models, puts
+      It installs the bundled ownscribe fork (with MLX), builds its audio
+      helper, writes its config, downloads the models, puts
       TeamsWatcher.app in /Applications (or ~/Applications) and adds it to
       Login Items. Re-run it after every `brew upgrade teamswatcher`.
 

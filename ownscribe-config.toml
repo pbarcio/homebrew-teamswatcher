@@ -1,21 +1,27 @@
-# Suggested ~/.config/ownscribe/config.toml for an M1 MacBook Pro with 32GB, fully local.
-# Merge into the file `ownscribe config` creates rather than replacing it blindly.
+# Suggested ~/.config/ownscribe/config.toml for an Apple Silicon MacBook, fully local.
+# teamswatcher-setup installs this unless you've edited your own copy.
 
 [audio]
 backend = "coreaudio"
 mic = true
-capture_mode = "all"       # TeamsWatcher narrows this to Teams with --pid when it can
+capture_mode = "all"       # TeamsWatcher narrows this to the meeting app with --app
 silence_timeout = 300      # safety net; TeamsWatcher normally stops it when the call ends
 
 [transcription]
-model = "medium"           # faster-whisper runs on CPU on Apple Silicon; try "large-v3" if speed is OK
-language = "en"            # skips auto-detect and lets warmup fetch the English alignment model
+backend = "mlx"            # Whisper on the Apple Silicon GPU; "whisperx" = the slower CPU backend
+model = "large-v3-turbo"   # fast and accurate on the GPU; "medium" if you want it lighter
+language = "en"
 # Prime Whisper with vocabulary it would otherwise mangle:
 initial_prompt = "Manhattan Active Warehouse Management, MAWM, webMethods Integration Server, MIF, Google Cloud Pub/Sub, MuleSoft, Boomi."
 hotwords = "MAWM, webMethods, Pub/Sub, MuleSoft, Boomi"
 
+[speakers]
+mode = "channels"          # your mic is labeled as you, everything from the call as "Them"
+me = ""                    # empty = your macOS account name
+them = "Them"
+
 [diarization]
-enabled = false            # speaker labels off: they'd only be SPEAKER_00/01 without real names
+enabled = false            # not needed: [speakers] already separates you from everyone else
 
 [summarization]
 enabled = true
@@ -29,3 +35,10 @@ context_size = 16384
 dir = "~/ownscribe"
 format = "markdown"
 keep_recording = true
+
+[export]
+# One Markdown file per meeting (title, date, speakers, summary, transcript), ready to
+# upload to Glean. Set to "auto" to save into a "Meeting Notes" folder in your work
+# OneDrive instead (that syncs to the cloud), or "" to turn exports off.
+dir = "~/ownscribe/Exports"
+include_transcript = true

@@ -1,5 +1,5 @@
-// TeamsWatcher — menu bar app that auto-starts ownscribe when Microsoft Teams
-// opens the microphone, and stops it (Ctrl+C equivalent) when Teams releases it.
+// TeamsWatcher — menu bar app that auto-starts ownscribe when a meeting app (Teams, Zoom,
+// Webex, ...) opens the microphone, and stops it (Ctrl+C equivalent) when the app releases it.
 //
 // Everything stays local: this app only watches Core Audio and launches ownscribe.
 // Requires macOS 14.2+ (Core Audio process objects). Build with ./build.sh.
@@ -7,6 +7,7 @@
 import AppKit
 import CoreAudio
 import Darwin
+import UserNotifications
 
 // MARK: - Paths, formatting, logging
 
@@ -36,6 +37,7 @@ let clockFormatter: DateFormatter = {
 
 var logFileURL: URL { URL(fileURLWithPath: logDirectory).appendingPathComponent("teamswatcher.log") }
 
+/// Main-thread only (call sites on other threads hop to main first).
 func log(_ message: String) {
     let line = "\(logFormatter.string(from: Date())) \(message)\n"
     guard let data = line.data(using: .utf8) else { return }
@@ -51,25 +53,74 @@ func log(_ message: String) {
 
 // MARK: - Config (~/.config/teamswatcher/config.json, created on first run)
 
+/// A meeting app whose microphone use starts a recording.
+struct MeetingApp: Codable {
+    var name: String
+    var enabled: Bool = true
+    /// Audio processes whose bundle ID starts with one of these belong to the app.
+    /// Also passed to ownscribe (--app) so only this app's audio is captured.
+    var bundlePrefixes: [String] = []
+    /// Fallback match on executable path (helpers without a bundle ID).
+    var pathMarkers: [String] = []
+
+    init(name: String, enabled: Bool, bundlePrefixes: [String], pathMarkers: [String]) {
+        self.name = name
+        self.enabled = enabled
+        self.bundlePrefixes = bundlePrefixes
+        self.pathMarkers = pathMarkers
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Meeting app"
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .enabled) { enabled = v }
+        if let v = try c.decodeIfPresent([String].self, forKey: .bundlePrefixes) { bundlePrefixes = v }
+        if let v = try c.decodeIfPresent([String].self, forKey: .pathMarkers) { pathMarkers = v }
+    }
+
+    func matches(_ p: AudioProc) -> Bool {
+        if !p.bundleID.isEmpty, bundlePrefixes.contains(where: { p.bundleID.hasPrefix($0) }) {
+            return true
+        }
+        return !p.path.isEmpty && pathMarkers.contains(where: { p.path.contains($0) })
+    }
+
+    static let defaults: [MeetingApp] = [
+        MeetingApp(name: "Microsoft Teams", enabled: true,
+                   bundlePrefixes: ["com.microsoft.teams"], pathMarkers: ["Microsoft Teams"]),
+        MeetingApp(name: "Zoom", enabled: true,
+                   bundlePrefixes: ["us.zoom."], pathMarkers: ["zoom.us.app"]),
+        MeetingApp(name: "Webex", enabled: true,
+                   bundlePrefixes: ["Cisco-Systems.Spark", "com.webex.", "com.cisco.webex"],
+                   pathMarkers: ["Webex.app", "Cisco Webex Meetings.app"]),
+        MeetingApp(name: "Slack huddles", enabled: false,
+                   bundlePrefixes: ["com.tinyspeck.slackmacgap"], pathMarkers: ["Slack.app"]),
+        // Browsers: any site that uses the mic (Google Meet, Teams on the web, ...) starts a recording.
+        MeetingApp(name: "Google Chrome", enabled: false,
+                   bundlePrefixes: ["com.google.Chrome"], pathMarkers: ["Google Chrome.app"]),
+        MeetingApp(name: "Microsoft Edge", enabled: false,
+                   bundlePrefixes: ["com.microsoft.edgemac"], pathMarkers: ["Microsoft Edge.app"]),
+        MeetingApp(name: "Safari", enabled: false,
+                   bundlePrefixes: ["com.apple.Safari", "com.apple.WebKit"], pathMarkers: ["Safari.app"]),
+    ]
+}
+
 struct Config: Codable {
     /// Where `uv tool install ownscribe` puts the command.
     var ownscribePath = "~/.local/bin/ownscribe"
-    /// Extra ownscribe flags, e.g. ["--diarize", "--template", "meeting"].
+    /// Extra ownscribe flags, e.g. ["--template", "meeting"].
     var extraArgs: [String] = []
-    /// Audio processes whose bundle ID starts with one of these count as Teams.
-    var teamsBundlePrefixes = ["com.microsoft.teams"]
-    /// Fallback match on executable path (covers helpers with no bundle ID).
-    var teamsPathMarkers = ["Microsoft Teams"]
-    /// Teams must hold the mic this long before recording starts (skips device tests / pre-join).
+    /// Apps that trigger recording. Set "enabled" to turn one on or off.
+    var meetingApps: [MeetingApp] = MeetingApp.defaults
+    /// The app must hold the mic this long before recording starts (skips device tests / pre-join).
     var startDebounceSeconds = 10.0
-    /// After Teams releases the mic, wait this long before stopping (covers brief drops).
+    /// After the app releases the mic, wait this long before stopping (covers brief drops).
     var stopGraceSeconds = 30.0
     var pollIntervalSeconds = 2.0
-    /// true = pass the Teams audio process PID to ownscribe so only Teams + your mic are captured.
-    /// Falls back to all system audio if no Teams output stream is found.
-    var captureTeamsAudioOnly = true
-    /// ownscribe's flag for targeting a process (check `ownscribe --help`).
-    var pidFlag = "--pid"
+    /// true = record only the meeting app's audio (plus your mic); false = all system audio.
+    var captureAppAudioOnly = true
+    /// ownscribe's flag for limiting capture to an app's bundle ID.
+    var appFlag = "--app"
     var notifications = true
     var transcriptsDir = "~/ownscribe"
     var logDir = "~/Library/Logs/TeamsWatcher"
@@ -81,24 +132,48 @@ struct Config: Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         if let v = try c.decodeIfPresent(String.self, forKey: .ownscribePath) { ownscribePath = v }
         if let v = try c.decodeIfPresent([String].self, forKey: .extraArgs) { extraArgs = v }
-        if let v = try c.decodeIfPresent([String].self, forKey: .teamsBundlePrefixes) { teamsBundlePrefixes = v }
-        if let v = try c.decodeIfPresent([String].self, forKey: .teamsPathMarkers) { teamsPathMarkers = v }
+        if let v = try c.decodeIfPresent([MeetingApp].self, forKey: .meetingApps) { meetingApps = v }
         if let v = try c.decodeIfPresent(Double.self, forKey: .startDebounceSeconds) { startDebounceSeconds = v }
         if let v = try c.decodeIfPresent(Double.self, forKey: .stopGraceSeconds) { stopGraceSeconds = v }
         if let v = try c.decodeIfPresent(Double.self, forKey: .pollIntervalSeconds) { pollIntervalSeconds = v }
-        if let v = try c.decodeIfPresent(Bool.self, forKey: .captureTeamsAudioOnly) { captureTeamsAudioOnly = v }
-        if let v = try c.decodeIfPresent(String.self, forKey: .pidFlag) { pidFlag = v }
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .captureAppAudioOnly) { captureAppAudioOnly = v }
+        if let v = try c.decodeIfPresent(String.self, forKey: .appFlag) { appFlag = v }
         if let v = try c.decodeIfPresent(Bool.self, forKey: .notifications) { notifications = v }
         if let v = try c.decodeIfPresent(String.self, forKey: .transcriptsDir) { transcriptsDir = v }
         if let v = try c.decodeIfPresent(String.self, forKey: .logDir) { logDir = v }
+        // Settings from the Teams-only version.
+        let legacy = try decoder.container(keyedBy: LegacyKeys.self)
+        if !c.contains(.captureAppAudioOnly),
+           let v = try legacy.decodeIfPresent(Bool.self, forKey: .captureTeamsAudioOnly) {
+            captureAppAudioOnly = v
+        }
     }
+
+    private enum LegacyKeys: String, CodingKey {
+        case captureTeamsAudioOnly
+    }
+}
+
+func encodeConfig(_ cfg: Config) -> Data? {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    return try? encoder.encode(cfg)
 }
 
 func loadConfig() -> Config {
     let url = URL(fileURLWithPath: configPath)
     if let data = try? Data(contentsOf: url) {
         do {
-            return try JSONDecoder().decode(Config.self, from: data)
+            let cfg = try JSONDecoder().decode(Config.self, from: data)
+            // Rewrite configs from older versions so new settings (like meetingApps) appear in the file.
+            let existingKeys = Set(((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?.keys.map { $0 } ?? [])
+            if let encoded = encodeConfig(cfg),
+               let currentKeys = (try? JSONSerialization.jsonObject(with: encoded)) as? [String: Any],
+               Set(currentKeys.keys) != existingKeys {
+                try? data.write(to: url.appendingPathExtension("bak"))
+                try? encoded.write(to: url)
+            }
+            return cfg
         } catch {
             log("Config parse error, using defaults: \(error)")
             return Config()
@@ -106,9 +181,7 @@ func loadConfig() -> Config {
     }
     let cfg = Config()
     try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    if let data = try? encoder.encode(cfg) { try? data.write(to: url) }
+    if let data = encodeConfig(cfg) { try? data.write(to: url) }
     return cfg
 }
 
@@ -192,10 +265,18 @@ func childPIDs(of pid: pid_t) -> [pid_t] {
     return Array(buffer.prefix(Int(count)))
 }
 
-// MARK: - Notifications (osascript avoids notification entitlements for an ad-hoc signed app)
+// MARK: - Notifications
 
 func appleScriptEscape(_ s: String) -> String {
     s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+}
+
+/// Fallback when macOS notification permission isn't available (not clickable).
+func notifyViaAppleScript(_ title: String, _ body: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    process.arguments = ["-e", "display notification \"\(appleScriptEscape(body))\" with title \"\(appleScriptEscape(title))\""]
+    try? process.run()
 }
 
 // MARK: - Recording session
@@ -204,22 +285,34 @@ final class Session {
     let process: Process
     let stdinPipe: Pipe
     let logURL: URL
+    let resultURL: URL
     let started = Date()
     let automatic: Bool
-    let teamsOnly: Bool
+    let appName: String
+    let appOnly: Bool
 
-    init(process: Process, stdinPipe: Pipe, logURL: URL, automatic: Bool, teamsOnly: Bool) {
+    init(process: Process, stdinPipe: Pipe, logURL: URL, resultURL: URL,
+         automatic: Bool, appName: String, appOnly: Bool) {
         self.process = process
         self.stdinPipe = stdinPipe
         self.logURL = logURL
+        self.resultURL = resultURL
         self.automatic = automatic
-        self.teamsOnly = teamsOnly
+        self.appName = appName
+        self.appOnly = appOnly
+    }
+
+    /// Paths ownscribe reported when it finished (output_dir, transcript, summary, export).
+    func results() -> [String: String] {
+        guard let data = try? Data(contentsOf: resultURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { return [:] }
+        return object
     }
 }
 
 // MARK: - App
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     var config = Config()
     var statusItem: NSStatusItem!
     var timer: Timer?
@@ -229,18 +322,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var stopItem: NSMenuItem!
     var skipItem: NSMenuItem!
     var pauseItem: NSMenuItem!
+    var latestNotesItem: NSMenuItem!
 
     var current: Session?
     var processing: [Session] = []
     var paused = false
     var skipCurrentCall = false
+    /// The meeting app currently holding the mic, and since when.
+    var activeApp: MeetingApp?
     var micActiveSince: Date?
     var micLastSeen: Date?
+    var latestNotesPath: String?
+    var clickableNotifications = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         applyConfig(loadConfig())
         buildMenu()
+        setUpNotifications()
         log("TeamsWatcher started. Config: \(configPath)")
+        let watched = config.meetingApps.filter { $0.enabled }.map { $0.name }
+        log("Watching: \(watched.joined(separator: ", "))")
         let exe = expand(config.ownscribePath)
         if !FileManager.default.isExecutableFile(atPath: exe) {
             notify("TeamsWatcher", "ownscribe not found at \(exe). Edit the config.")
@@ -255,6 +356,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         timer = Timer.scheduledTimer(timeInterval: max(0.5, cfg.pollIntervalSeconds),
                                      target: self, selector: #selector(tick),
                                      userInfo: nil, repeats: true)
+    }
+
+    // MARK: Notifications
+
+    func setUpNotifications() {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+            DispatchQueue.main.async {
+                self.clickableNotifications = granted
+                if let error {
+                    log("Notification permission unavailable (\(error.localizedDescription)); using basic notifications")
+                } else if !granted {
+                    log("Notifications not allowed for TeamsWatcher; using basic notifications")
+                }
+            }
+        }
+    }
+
+    /// Shows a notification. With `open`, clicking it opens that file or folder.
+    func notify(_ title: String, _ body: String, open path: String? = nil) {
+        guard config.notifications else { return }
+        guard clickableNotifications else {
+            notifyViaAppleScript(title, body)
+            return
+        }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        if let path { content.userInfo = ["path": path] }
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request) { error in
+            guard let error else { return }
+            DispatchQueue.main.async {
+                log("Notification failed (\(error.localizedDescription)); using basic notification")
+                notifyViaAppleScript(title, body)
+            }
+        }
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list])
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        if let path = response.notification.request.content.userInfo["path"] as? String {
+            DispatchQueue.main.async { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
+        }
+        completionHandler()
     }
 
     // MARK: Menu
@@ -275,6 +429,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         [startItem, stopItem, skipItem, pauseItem].forEach { menu.addItem($0) }
 
         menu.addItem(.separator())
+        latestNotesItem = item("Open Latest Notes", #selector(openLatestNotes))
+        menu.addItem(latestNotesItem)
         menu.addItem(item("Open Transcripts Folder", #selector(openTranscripts)))
         menu.addItem(item("Open Logs", #selector(openLogs)))
         menu.addItem(item("Log Audio Processes (Debug)", #selector(dumpAudioProcesses)))
@@ -311,13 +467,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         var lines: [String] = []
         if let s = current {
-            lines.append("Recording since \(clockFormatter.string(from: s.started)) (\(s.teamsOnly ? "Teams audio" : "all system audio") + mic)")
+            let source = s.appOnly ? "\(s.appName) audio" : "all system audio"
+            lines.append("Recording since \(clockFormatter.string(from: s.started)) (\(source) + mic)")
         } else if paused {
             lines.append("Auto-start paused")
         } else if skipCurrentCall {
             lines.append("Skipping this call")
         } else {
-            lines.append("Watching for Teams calls")
+            lines.append("Watching for calls")
         }
         if !processing.isEmpty {
             lines.append("Processing \(processing.count) recording(s)…")
@@ -328,25 +485,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         stopItem.isEnabled = current != nil
         skipItem.isEnabled = current != nil || micActiveSince != nil
         pauseItem.state = paused ? .on : .off
+        latestNotesItem.isEnabled = latestNotesPath != nil
     }
 
     // MARK: Watch loop
 
+    /// The first enabled meeting app that has the mic open, with its audio processes.
+    func meetingAppUsingMic(_ procs: [AudioProc]) -> (app: MeetingApp, procs: [AudioProc])? {
+        for app in config.meetingApps where app.enabled {
+            let mine = procs.filter(app.matches)
+            if mine.contains(where: { $0.runningInput }) {
+                return (app, mine)
+            }
+        }
+        return nil
+    }
+
     @objc func tick() {
         let now = Date()
-        let teams = audioProcesses().filter(isTeams)
-        let micActive = teams.contains { $0.runningInput }
+        let inUse = meetingAppUsingMic(audioProcesses())
 
-        if micActive {
+        if let inUse {
             if micActiveSince == nil {
                 micActiveSince = now
-                log("Teams opened the microphone")
+                log("\(inUse.app.name) opened the microphone")
             }
+            activeApp = inUse.app
             micLastSeen = now
         } else if micActiveSince != nil {
             micActiveSince = nil
-            log("Teams released the microphone")
+            log("\(activeApp?.name ?? "Meeting app") released the microphone")
         }
+        let micActive = inUse != nil
 
         let releasedLongEnough: Bool = {
             guard !micActive, let last = micLastSeen else { return !micActive }
@@ -355,29 +525,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let session = current {
             if session.automatic && releasedLongEnough {
-                stopRecording(reason: "Teams released the mic for \(Int(config.stopGraceSeconds))s")
+                stopRecording(reason: "\(session.appName) released the mic for \(Int(config.stopGraceSeconds))s")
             }
         } else {
             if releasedLongEnough { skipCurrentCall = false }
-            if micActive, !paused, !skipCurrentCall, let since = micActiveSince,
+            if let inUse, !paused, !skipCurrentCall, let since = micActiveSince,
                now.timeIntervalSince(since) >= config.startDebounceSeconds {
-                let target = config.captureTeamsAudioOnly ? teams.first(where: { $0.runningOutput })?.pid : nil
-                startRecording(targetPID: target, automatic: true)
+                startRecording(app: inUse.app, automatic: true)
             }
         }
         updateUI()
     }
 
-    func isTeams(_ p: AudioProc) -> Bool {
-        if !p.bundleID.isEmpty, config.teamsBundlePrefixes.contains(where: { p.bundleID.hasPrefix($0) }) {
-            return true
-        }
-        return !p.path.isEmpty && config.teamsPathMarkers.contains(where: { p.path.contains($0) })
-    }
-
     // MARK: Start / stop
 
-    func startRecording(targetPID: pid_t?, automatic: Bool) {
+    func startRecording(app: MeetingApp?, automatic: Bool) {
         guard current == nil else { return }
         let exe = expand(config.ownscribePath)
         guard FileManager.default.isExecutableFile(atPath: exe) else {
@@ -388,11 +550,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         var args = config.extraArgs
-        if let pid = targetPID { args += [config.pidFlag, String(pid)] }
+        let appOnly = config.captureAppAudioOnly && !(app?.bundlePrefixes.isEmpty ?? true)
+        if appOnly, let app {
+            for prefix in app.bundlePrefixes { args += [config.appFlag, prefix] }
+        }
+        let appName = app?.name ?? "Meeting"
 
         try? FileManager.default.createDirectory(atPath: logDirectory, withIntermediateDirectories: true)
-        let sessionLog = URL(fileURLWithPath: logDirectory)
-            .appendingPathComponent("ownscribe-\(stampFormatter.string(from: Date())).log")
+        let stamp = stampFormatter.string(from: Date())
+        let sessionLog = URL(fileURLWithPath: logDirectory).appendingPathComponent("ownscribe-\(stamp).log")
+        let resultURL = URL(fileURLWithPath: logDirectory).appendingPathComponent("result-\(stamp).json")
 
         // `script` gives ownscribe a pseudo-terminal so its TUI and Ctrl+C handling behave
         // exactly as in Terminal, and records the session output to a log file.
@@ -402,14 +569,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:\(home)/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         env["TERM"] = "xterm-256color"
+        env["OWNSCRIBE_RESULT_FILE"] = resultURL.path
+        env["OWNSCRIBE_SOURCE_APP"] = appName
         process.environment = env
         let stdinPipe = Pipe() // held open so `script` never sends EOF to ownscribe
         process.standardInput = stdinPipe
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
 
-        let session = Session(process: process, stdinPipe: stdinPipe, logURL: sessionLog,
-                              automatic: automatic, teamsOnly: targetPID != nil)
+        let session = Session(process: process, stdinPipe: stdinPipe, logURL: sessionLog, resultURL: resultURL,
+                              automatic: automatic, appName: appName, appOnly: appOnly)
         process.terminationHandler = { [weak self] proc in
             let status = proc.terminationStatus
             DispatchQueue.main.async { self?.sessionEnded(session, status: status) }
@@ -424,9 +593,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         current = session
-        log("Started ownscribe (\(automatic ? "auto" : "manual")) args=\(args) log=\(sessionLog.lastPathComponent)")
-        notify("Recording Teams call",
-               targetPID != nil ? "Capturing Teams audio + your mic." : "Capturing all system audio + your mic.")
+        log("Started ownscribe (\(automatic ? "auto" : "manual"), \(appName)) args=\(args) log=\(sessionLog.lastPathComponent)")
+        notify("Recording \(appName) call",
+               appOnly ? "Capturing \(appName) audio + your mic." : "Capturing all system audio + your mic.")
         updateUI()
     }
 
@@ -443,7 +612,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         current = nil
         processing.append(session)
         log("Stop requested: \(reason)")
-        notify("Teams call ended", "Transcribing and summarizing locally…")
+        notify("\(session.appName) call ended", "Transcribing and summarizing locally…")
         updateUI()
     }
 
@@ -458,7 +627,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 paused = true
                 log("ownscribe exited after \(Int(runtime))s with status \(status); pausing auto-start")
                 notify("ownscribe stopped unexpectedly",
-                       "Auto-start paused. See \(session.logURL.lastPathComponent).")
+                       "Auto-start paused. Click to see the log.", open: session.logURL.path)
                 updateUI()
                 return
             }
@@ -466,29 +635,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         processing.removeAll { $0 === session }
-        log("ownscribe finished with status \(status); output log \(session.logURL.lastPathComponent)")
-        if status == 0 {
-            notify("Meeting notes ready", "Saved in \(config.transcriptsDir)")
+        let results = session.results()
+        try? FileManager.default.removeItem(at: session.resultURL)
+        log("ownscribe finished with status \(status); results=\(results); log=\(session.logURL.lastPathComponent)")
+
+        let notes = results["export"] ?? results["summary"] ?? results["transcript"] ?? results["output_dir"]
+        if status == 0, let notes {
+            latestNotesPath = notes
+            let name = (notes as NSString).lastPathComponent
+            notify("Meeting notes ready", "Click to open \(name)", open: notes)
+        } else if status == 0 {
+            notify("Meeting notes ready", "Saved in \(config.transcriptsDir)", open: expand(config.transcriptsDir))
         } else {
-            notify("ownscribe exited with an error", "See \(session.logURL.lastPathComponent)")
+            notify("ownscribe exited with an error", "Click to see the log.", open: session.logURL.path)
         }
         updateUI()
-    }
-
-    func notify(_ title: String, _ body: String) {
-        guard config.notifications else { return }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", "display notification \"\(appleScriptEscape(body))\" with title \"\(appleScriptEscape(title))\""]
-        try? process.run()
     }
 
     // MARK: Menu actions
 
     @objc func manualStart() {
-        let teams = audioProcesses().filter(isTeams)
-        let target = config.captureTeamsAudioOnly ? teams.first(where: { $0.runningOutput })?.pid : nil
-        startRecording(targetPID: target, automatic: false)
+        let inUse = meetingAppUsingMic(audioProcesses())
+        startRecording(app: inUse?.app, automatic: false)
     }
 
     @objc func manualStop() { stopRecording(reason: "stopped from menu") }
@@ -496,7 +664,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func skipCall() {
         skipCurrentCall = true
         if current != nil { stopRecording(reason: "skip this call") }
-        log("Skipping current call until Teams releases the mic")
+        log("Skipping current call until the app releases the mic")
         updateUI()
     }
 
@@ -504,6 +672,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         paused.toggle()
         log(paused ? "Auto-start paused" : "Auto-start resumed")
         updateUI()
+    }
+
+    @objc func openLatestNotes() {
+        guard let path = latestNotesPath else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
     @objc func openTranscripts() {
@@ -521,7 +694,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let procs = audioProcesses()
         var lines = ["Audio processes (\(procs.count)):"]
         for p in procs {
-            lines.append("  pid=\(p.pid) in=\(p.runningInput) out=\(p.runningOutput) teams=\(isTeams(p)) bundle=\(p.bundleID) path=\(p.path)")
+            let app = config.meetingApps.first(where: { $0.matches(p) })
+            let appLabel = app.map { "\($0.name)\($0.enabled ? "" : " (disabled)")" } ?? "-"
+            lines.append("  pid=\(p.pid) in=\(p.runningInput) out=\(p.runningOutput) app=\(appLabel) bundle=\(p.bundleID) path=\(p.path)")
         }
         log(lines.joined(separator: "\n"))
         NSWorkspace.shared.open(logFileURL)
@@ -536,7 +711,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func reloadConfig() {
         applyConfig(loadConfig())
-        log("Config reloaded")
+        log("Config reloaded. Watching: \(config.meetingApps.filter { $0.enabled }.map { $0.name }.joined(separator: ", "))")
         updateUI()
     }
 

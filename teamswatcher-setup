@@ -2,7 +2,7 @@
 # teamswatcher-setup: sets up ownscribe + TeamsWatcher on Apple Silicon (macOS 14.2+).
 #
 #   teamswatcher-setup            install or repair everything
-#   teamswatcher-setup --upgrade  also upgrade ownscribe to the latest release
+#   teamswatcher-setup --upgrade  also reinstall ownscribe with the newest dependency versions
 #   teamswatcher-setup --rebuild  reinstall the app even if unchanged (you'll re-grant permissions)
 #
 # Works from a Homebrew install (brew install teamswatcher) or a git checkout (./install.sh).
@@ -36,13 +36,16 @@ if [[ -d "$BREW_PREFIX/$APP_NAME.app" ]]; then
   MODE="brew"
   SRC_APP="$BREW_PREFIX/$APP_NAME.app"
   CONFIG_TEMPLATE="$BREW_PREFIX/share/teamswatcher/ownscribe-config.toml"
+  OWNSCRIBE_SRC="$BREW_PREFIX/share/teamswatcher/ownscribe"
 else
   MODE="source"
   SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   SRC_APP="$SRC_DIR/build/$APP_NAME.app"
   CONFIG_TEMPLATE="$SRC_DIR/ownscribe-config.toml"
+  OWNSCRIBE_SRC="$SRC_DIR/ownscribe"
 fi
 [[ -f "$CONFIG_TEMPLATE" ]] || die "Config template not found at $CONFIG_TEMPLATE"
+[[ -f "$OWNSCRIBE_SRC/pyproject.toml" ]] || die "ownscribe source not found at $OWNSCRIBE_SRC"
 
 # Install to /Applications when we can write there, otherwise ~/Applications (no admin needed).
 if [[ -w /Applications ]]; then APP_DIR="/Applications"; else APP_DIR="$HOME/Applications"; fi
@@ -75,18 +78,43 @@ for tool in uv ffmpeg; do
 done
 
 # ---------------------------------------------------------------------------
-step "Installing ownscribe"
-if uv tool list 2>/dev/null | grep -q '^ownscribe '; then
-  if (( UPGRADE )); then uv tool upgrade ownscribe; else echo "ownscribe: already installed (use --upgrade to update)"; fi
+step "Installing ownscribe (TeamsWatcher fork, with MLX)"
+# Fingerprint of the bundled fork, so re-runs only reinstall when it changed.
+fork_hash="$(cd "$OWNSCRIBE_SRC" && find pyproject.toml src swift/Sources -type f ! -name '*.pyc' | LC_ALL=C sort | xargs cat | shasum -a 256 | cut -c1-16)"
+tool_dir="$(uv tool dir)/ownscribe"
+installed_fork_hash="$(cat "$tool_dir/.teamswatcher-fork-hash" 2>/dev/null || true)"
+if [[ "$fork_hash" == "$installed_fork_hash" ]] && (( ! UPGRADE )) && command -v ownscribe >/dev/null 2>&1; then
+  echo "ownscribe: up to date"
 else
-  uv tool install ownscribe
+  # A file:// URL keeps the [mlx] extra attached to a local path (spaces escaped).
+  src_url="file://${OWNSCRIBE_SRC// /%20}"
+  upgrade_flag=()
+  if (( UPGRADE )); then upgrade_flag=(--upgrade); fi
+  uv tool install --force --reinstall --python 3.12 "${upgrade_flag[@]+"${upgrade_flag[@]}"}" "ownscribe[mlx] @ $src_url"
+  echo "$fork_hash" > "$tool_dir/.teamswatcher-fork-hash"
 fi
 uv tool update-shell >/dev/null 2>&1 || true
 command -v ownscribe >/dev/null 2>&1 || die "ownscribe isn't on PATH after install (expected in ~/.local/bin)."
 
-if ! ownscribe --help 2>/dev/null | grep -q -- '--pid'; then
-  warn "ownscribe --help doesn't list --pid. Set \"pidFlag\" in ~/.config/teamswatcher/config.json, or set \"captureTeamsAudioOnly\" to false."
+# ---------------------------------------------------------------------------
+step "Building the audio capture helper"
+# Built from the fork's source: the upstream download lacks --app and --split-tracks.
+# ownscribe looks for it in its own tool folder before anywhere else.
+helper="$tool_dir/bin/ownscribe-audio"
+helper_hash="$(cat "$OWNSCRIBE_SRC/swift/Sources/AudioCapture.swift" | shasum -a 256 | cut -c1-16)"
+if [[ -x "$helper" && "$(cat "$helper.source-hash" 2>/dev/null || true)" == "$helper_hash" ]]; then
+  echo "ownscribe-audio: up to date"
+else
+  mkdir -p "$(dirname "$helper")"
+  swiftc -O -target arm64-apple-macos14.2 \
+    -framework ScreenCaptureKit -framework CoreMedia -framework AVFAudio -framework AppKit \
+    -framework CoreGraphics -framework CoreAudio -framework AudioToolbox \
+    -o "$helper" "$OWNSCRIBE_SRC/swift/Sources/AudioCapture.swift"
+  echo "$helper_hash" > "$helper.source-hash"
+  echo "Built $helper"
 fi
+"$helper" --help 2>&1 | grep -q -- '--split-tracks' || die "The audio helper at $helper is missing --split-tracks."
+ownscribe --help 2>/dev/null | grep -q -- '--app' || die "Installed ownscribe is missing --app; re-run with --upgrade."
 
 # ---------------------------------------------------------------------------
 step "Writing ownscribe config"
@@ -167,7 +195,7 @@ $APP_NAME was installed fresh, so macOS needs to approve it once:
      under both. If an older entry is listed, toggle it off and on.)
   3. Choose "Stop Recording", then quit $APP_NAME from its menu and reopen it.
 
-After that it records Teams calls automatically.
+After that it records Teams, Zoom and Webex calls automatically.
 EOF
 else
   echo "Everything is installed and $APP_NAME is running."
