@@ -53,7 +53,7 @@ final class SettingsModel: ObservableObject {
     @Published var myNamePlaceholder = "Your macOS name"
     @Published var theirLabel = "Them"
     @Published var english = true
-    @Published var spanish = true
+    @Published var spanish = false
     @Published var otherLanguages = ""
     @Published var model = "large-v3-turbo"
     @Published var vocabulary = ""

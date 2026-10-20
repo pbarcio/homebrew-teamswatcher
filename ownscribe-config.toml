@@ -10,9 +10,9 @@ silence_timeout = 300      # safety net; TeamsWatcher normally stops it when the
 [transcription]
 backend = "mlx"            # Whisper on the Apple Silicon GPU; "whisperx" = the slower CPU backend
 model = "large-v3-turbo"   # fast and accurate on the GPU; "medium" if you want it lighter
-language = ""              # not fixed: see languages
-languages = ["en", "es"]   # calls can switch between English and Spanish at any point; each stretch
-                           # of speech is transcribed in its own language. Use ["en"] for English only.
+language = "en"
+languages = ["en"]         # English only. For calls that switch between languages, list them all, e.g.
+                           # ["en", "es"] (and set language = ""), or check them in Settings > Transcription.
 # Vocabulary hints: names Whisper would otherwise mishear, such as product, system and client names.
 # Easiest to set in TeamsWatcher > Settings > Transcription. Example:
 #   initial_prompt = "Contoso, Fabrikam, ERP, CRM, SharePoint."

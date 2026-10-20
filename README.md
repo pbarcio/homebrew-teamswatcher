@@ -10,7 +10,7 @@ Requires an Apple Silicon Mac with macOS 14.2 or later.
 
 - **A transcript labeled you vs. them.** Your mic and the call audio are recorded as separate tracks, so every line is attributed to you (your macOS name) or "Them". No speaker-recognition model or account is needed.
 - **Fast, local transcription.** Whisper large-v3-turbo runs on the Mac's GPU.
-- **English and Spanish, mixed freely.** People can switch languages at any point; each stretch of speech is transcribed in the language it was spoken in.
+- **Mixed-language calls, if you need them.** Transcription is English by default. Turn on Spanish (or other languages) and people can switch languages at any point; each stretch of speech is transcribed in the language it was spoken in.
 - **A notes file ready to upload to Glean.** It holds the title, date, duration, app and speakers, then the summary (if on) and the transcript.
 - **A notification when it's done.** Clicking it opens Finder at that recording's folder, with the notes selected.
 
@@ -102,12 +102,15 @@ Recording starts once the app has held the mic for **10 seconds**, which keeps d
 
 ## Languages
 
-Calls can switch between English and Spanish at any moment, mid-conversation or person to person. Each track is split at natural pauses, the language of every stretch of speech is detected (choosing only between English and Spanish), and each stretch is transcribed in that language. The notes file lists `languages: ["en", "es"]` when both were spoken.
+Transcription is **English only** by default. If your calls use other languages, open **Settings… › Transcription** and check Spanish, or enter other language codes such as `pt` or `fr`.
+
+With more than one language on, calls can switch between them at any moment, mid-conversation or person to person. Each track is split at natural pauses, the language of every stretch of speech is detected (choosing only among the languages you turned on), and each stretch is transcribed in that language. The notes file lists the languages, such as `languages: ["en", "es"]`, when more than one was spoken.
 
 - Very short replies like "sí" or "OK" keep the language of the surrounding conversation, unless they're clearly the other one.
 - A switch in the middle of a sentence, with no pause, is transcribed in whichever language most of that stretch was in.
-- The summary is written in English, covering both languages.
-- To change the languages, open **Settings… › Transcription**: uncheck Spanish for English-only calls, or add other language codes such as `pt`. Mixed-language calls need the default GPU (`mlx`) backend.
+- The summary is written in English, covering all the languages spoken.
+- Only turn on languages your calls actually use. Each extra language gives Whisper one more option to mistake speech for, especially on short replies.
+- Mixed-language calls need the default GPU (`mlx`) backend.
 
 ## Settings
 
