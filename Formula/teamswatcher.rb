@@ -1,10 +1,10 @@
 class Teamswatcher < Formula
   desc "Auto-records Teams, Zoom and Webex calls and transcribes them locally"
-  homepage "https://github.com/OWNER/homebrew-teamswatcher"
-  url "https://github.com/OWNER/homebrew-teamswatcher/archive/refs/tags/v0.0.0.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  homepage "https://github.com/pbarcio/homebrew-teamswatcher"
+  url "https://github.com/pbarcio/homebrew-teamswatcher/archive/refs/tags/v0.2.0.tar.gz"
+  sha256 "62abb8a2512716d40c315eda9d44d68f732bfb96f1bc960937e3f68432d79027"
   license "MIT"
-  head "https://github.com/OWNER/homebrew-teamswatcher.git", branch: "main"
+  head "https://github.com/pbarcio/homebrew-teamswatcher.git", branch: "main"
 
   depends_on arch: :arm64
   depends_on macos: :sonoma
