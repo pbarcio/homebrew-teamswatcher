@@ -266,6 +266,65 @@ def config_cmd() -> None:
 
 
 @cli.command()
+@click.option("--apply", "apply_changes", is_flag=True, help="Make the changes (without it, only show them).")
+@click.pass_context
+def tidy(ctx: click.Context, apply_changes: bool) -> None:
+    """Organize the output folder: one "YYYY-MM-DD HHMM - Title" folder per recording.
+
+    Renames older folders, moves notes from the old Exports folder into their recording's
+    folder, and removes empty folders. Shows what it would do unless --apply is given.
+    """
+    from pathlib import Path
+
+    from ownscribe.config import _LEGACY_EXPORT_DIR
+    from ownscribe.tidy import apply_tidy, plan_tidy
+
+    config = ctx.obj["config"]
+    output_dir = config.output.resolved_dir
+    plan = plan_tidy(output_dir, [Path(_LEGACY_EXPORT_DIR).expanduser()])
+
+    def rel(path: Path) -> str:
+        try:
+            return str(path.relative_to(output_dir))
+        except ValueError:
+            return str(path)
+
+    if plan.empty:
+        click.echo(f"{output_dir} is already tidy.")
+    else:
+        if plan.renames:
+            click.echo("Rename:")
+            for src, dst in plan.renames:
+                click.echo(f"  {src.name}  ->  {dst.name}")
+        if plan.moves:
+            click.echo("Move notes into their recording's folder:")
+            for src, dst in plan.moves:
+                click.echo(f"  {rel(src)}  ->  {rel(dst)}")
+        if plan.removals:
+            click.echo("Remove empty folders:")
+            for folder in plan.removals:
+                click.echo(f"  {rel(folder)}")
+    if plan.unmatched_exports:
+        click.echo("Left alone (no matching recording folder):")
+        for f in plan.unmatched_exports:
+            click.echo(f"  {rel(f)}")
+    if plan.in_use:
+        click.echo("Skipped (changed in the last 10 minutes, may still be recording):")
+        for folder in plan.in_use:
+            click.echo(f"  {rel(folder)}")
+
+    if plan.empty:
+        return
+    if not apply_changes:
+        click.echo("\nNothing has been changed. Run `ownscribe tidy --apply` to make these changes.")
+        return
+    problems = apply_tidy(plan)
+    for problem in problems:
+        click.echo(f"Warning: {problem}", err=True)
+    click.echo("\nDone." if not problems else "\nDone, with the warnings above.")
+
+
+@cli.command()
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts.")
 @click.option("--all", "all_", is_flag=True, help="Remove everything (config + cache + output).")
 @click.option("--config", "config_", is_flag=True, help="Remove config directory (~/.config/ownscribe/).")

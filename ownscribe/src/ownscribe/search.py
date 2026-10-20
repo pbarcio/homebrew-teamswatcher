@@ -109,7 +109,14 @@ def _parse_folder_name(name: str) -> tuple[str, str] | None:
     """
     m = _FOLDER_RE.match(name)
     if not m:
-        return None
+        # TeamsWatcher-style names: "2026-02-13 1501 - Quarterly planning"
+        from ownscribe.output.naming import parse_folder_name
+
+        parsed = parse_folder_name(name)
+        if parsed is None or parsed.legacy:
+            return None
+        when = f"{parsed.date} {parsed.hour}:{parsed.minute}"
+        return parsed.date, f"{when} — {parsed.title}" if parsed.title else when
     date_str = m.group(1)
     hour, minute = m.group(2), m.group(3)
     slug = m.group(4)

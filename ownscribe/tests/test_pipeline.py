@@ -608,8 +608,8 @@ class TestDoTranscribeAndSummarize:
         ):
             _do_transcribe_and_summarize(config, audio_path, out_dir, summarize=True)
 
-        renamed_out_dir = out_dir.parent / "2026-01-01_1200_budget-review"
-        renamed_audio_dir = audio_dir.parent / "2026-01-01_1200_budget-review"
+        renamed_out_dir = out_dir.parent / "2026-01-01 1200 - Budget Review"
+        renamed_audio_dir = audio_dir.parent / "2026-01-01 1200 - Budget Review"
         assert (renamed_out_dir / "transcript.md").exists()
         assert (renamed_out_dir / "summary.md").exists()
         assert (renamed_audio_dir / "recording.wav").exists()
@@ -675,7 +675,7 @@ class TestDoTranscribeAndSummarize:
         ):
             _do_transcribe_and_summarize(config, audio_path, out_dir, summarize=True)
 
-        renamed_out_dir = out_dir.parent / "2026-01-01_1200_budget-review"
+        renamed_out_dir = out_dir.parent / "2026-01-01 1200 - Budget Review"
         assert (renamed_out_dir / "transcript.md").exists()
         assert (renamed_out_dir / "summary.md").exists()
         assert not (renamed_out_dir / "recording.wav").exists()
@@ -978,6 +978,7 @@ class TestRunSummarizeColocation:
 
         config = Config()
         config.summarization.enabled = True
+        config.output.dir = str(tmp_path / "meetings")
 
         mock_summarizer = mock.MagicMock()
         mock_summarizer.is_available.return_value = True
@@ -990,7 +991,7 @@ class TestRunSummarizeColocation:
         ):
             run_summarize(config, str(tx_path))
 
-        renamed_dir = tx_dir.parent / f"{tx_dir.name}_test-title"
+        renamed_dir = tx_dir.parent / "2026-01-01 1200 - test-title"
         assert (renamed_dir / "summary.md").exists()
 
     def test_renames_matching_audio_dir_inside_output_tree(self, tmp_path):
@@ -1021,9 +1022,10 @@ class TestRunSummarizeColocation:
         ):
             run_summarize(config, str(tx_path))
 
-        renamed_audio_dir = audio_dir.parent / f"{audio_dir.name}_test-title"
+        renamed_audio_dir = audio_dir.parent / "2026-01-01 1200 - test-title"
         assert (renamed_audio_dir / "recording.wav").exists()
         assert not audio_dir.exists()
+        assert (tmp_path / "notes" / "2026-01-01 1200 - test-title" / "summary.md").exists()
 
     def test_leaves_audio_dir_alone_for_transcript_outside_output_tree(self, tmp_path):
         """A same-named directory under audio_dir must not be renamed when the
@@ -1054,10 +1056,10 @@ class TestRunSummarizeColocation:
         ):
             run_summarize(config, str(tx_path))
 
-        renamed_dir = tx_dir.parent / f"{tx_dir.name}_test-title"
-        assert (renamed_dir / "summary.md").exists()
+        # Folders outside the output tree are never renamed.
+        assert (tx_dir / "summary.md").exists()
         assert unrelated_audio_dir.exists()
-        assert not (unrelated_audio_dir.parent / f"{tx_dir.name}_test-title").exists()
+        assert sorted(p.name for p in unrelated_audio_dir.parent.iterdir()) == ["2026-01-01_1200"]
 
 
 class TestResume:
@@ -1147,18 +1149,17 @@ class TestResume:
 
 
 class TestForkFeaturesEndToEnd:
-    """Me-vs-them labels, export and the launcher result file through the real pipeline."""
+    """Me-vs-them labels, one folder per recording and the launcher result file."""
 
-    def test_split_tracks_export_and_result_file(self, tmp_path, monkeypatch):
+    def test_split_tracks_folder_notes_and_result_file(self, tmp_path, monkeypatch):
         import json
-        from pathlib import Path
 
         import numpy as np
         import soundfile as sf
 
         from ownscribe.pipeline import _do_transcribe_and_summarize
 
-        out_dir = tmp_path / "out" / "2026-10-19_1405"
+        out_dir = tmp_path / "out" / "2026-10-19 1405"
         out_dir.mkdir(parents=True)
         audio_path = out_dir / "recording.wav"
         loud = (0.3 * np.sin(np.arange(24000 * 6) / 24000 * 2 * np.pi * 440)).astype(np.float32)
@@ -1181,8 +1182,8 @@ class TestForkFeaturesEndToEnd:
 
         config = Config()
         config.output.dir = str(tmp_path / "out")
+        config.output.keep_recording = True
         config.speakers.me = "Pierce"
-        config.export.dir = str(tmp_path / "export")
         result_file = tmp_path / "result.json"
         monkeypatch.setenv("OWNSCRIBE_RESULT_FILE", str(result_file))
         monkeypatch.setenv("OWNSCRIBE_SOURCE_APP", "Microsoft Teams")
@@ -1196,21 +1197,50 @@ class TestForkFeaturesEndToEnd:
 
         assert summarizer.summarize.call_args[0][0] == "Them: Who sends the spec?\nPierce: I'll send the spec."
 
-        final_dir = tmp_path / "out" / "2026-10-19_1405_spec-handoff"
+        # Everything for the recording is in one readable folder; nothing else in the output dir.
+        final_dir = tmp_path / "out" / "2026-10-19 1405 - Spec handoff"
+        assert [p.name for p in (tmp_path / "out").iterdir()] == [final_dir.name]
+        assert sorted(p.name for p in final_dir.iterdir()) == [
+            "2026-10-19 1405 - Spec handoff.md",
+            "recording.me.wav",
+            "recording.them.wav",
+            "recording.wav",
+            "summary.md",
+            "transcript.md",
+        ]
+
         paths = json.loads(result_file.read_text())
         assert paths["output_dir"] == str(final_dir)
         assert paths["summary"] == str(final_dir / "summary.md")
         assert paths["transcript"] == str(final_dir / "transcript.md")
+        assert paths["notes"] == str(final_dir / "2026-10-19 1405 - Spec handoff.md")
         assert "**Pierce** [00:03]" in (final_dir / "transcript.md").read_text()
 
-        export = Path(paths["export"])
-        assert export == tmp_path / "export" / "2026-10-19 1405 - Spec handoff.md"
-        exported = export.read_text()
-        assert 'source: "Microsoft Teams"' in exported
-        assert 'speakers: ["Them", "Pierce"]' in exported
-        assert "# Spec handoff" in exported
+        notes = (final_dir / "2026-10-19 1405 - Spec handoff.md").read_text()
+        assert 'source: "Microsoft Teams"' in notes
+        assert 'speakers: ["Them", "Pierce"]' in notes
+        assert "# Spec handoff" in notes
 
-    def test_no_export_by_default(self, tmp_path, monkeypatch):
+    def test_optional_copy_of_notes(self, tmp_path, monkeypatch):
+        from ownscribe.pipeline import _do_transcribe_and_summarize
+
+        out_dir = tmp_path / "out" / "2026-10-19 1405"
+        out_dir.mkdir(parents=True)
+        (out_dir / "recording.wav").touch()
+        transcriber = mock.MagicMock()
+        transcriber.transcribe.return_value = TranscriptResult(segments=[Segment(text="Hi.", start=0, end=1)])
+        config = Config()
+        config.output.dir = str(tmp_path / "out")
+        config.speakers.mode = "none"
+        config.summarization.enabled = False
+        config.export.copy_to = str(tmp_path / "copies")
+        monkeypatch.setenv("OWNSCRIBE_SOURCE_APP", "Zoom")
+        with mock.patch("ownscribe.pipeline._create_transcriber", return_value=transcriber):
+            _do_transcribe_and_summarize(config, out_dir / "recording.wav", out_dir, summarize=True)
+        assert (tmp_path / "out" / "2026-10-19 1405 - Zoom call" / "2026-10-19 1405 - Zoom call.md").exists()
+        assert (tmp_path / "copies" / "2026-10-19 1405 - Zoom call.md").exists()
+
+    def test_transcribe_only_leaves_folder_alone(self, tmp_path, monkeypatch):
         from ownscribe.pipeline import _do_transcribe_and_summarize
 
         monkeypatch.delenv("OWNSCRIBE_RESULT_FILE", raising=False)
@@ -1221,9 +1251,26 @@ class TestForkFeaturesEndToEnd:
         config = Config()
         config.summarization.enabled = False
         with mock.patch("ownscribe.pipeline._create_transcriber", return_value=transcriber):
-            _do_transcribe_and_summarize(config, audio_path, tmp_path, summarize=True)
+            _do_transcribe_and_summarize(config, audio_path, tmp_path, summarize=False)
         assert transcriber.transcribe.call_args[0][0] == audio_path
         assert sorted(p.name for p in tmp_path.iterdir()) == ["recording.wav", "transcript.md"]
+
+    def test_folders_outside_output_dir_are_not_renamed(self, tmp_path, monkeypatch):
+        from ownscribe.pipeline import _do_transcribe_and_summarize
+
+        elsewhere = tmp_path / "Desktop" / "2026-10-19 1405"
+        elsewhere.mkdir(parents=True)
+        (elsewhere / "recording.wav").touch()
+        transcriber = mock.MagicMock()
+        transcriber.transcribe.return_value = TranscriptResult(segments=[Segment(text="Hi.", start=0, end=1)])
+        config = Config()
+        config.output.dir = str(tmp_path / "ownscribe")
+        config.speakers.mode = "none"
+        config.summarization.enabled = False
+        with mock.patch("ownscribe.pipeline._create_transcriber", return_value=transcriber):
+            _do_transcribe_and_summarize(config, elsewhere / "recording.wav", elsewhere, summarize=True)
+        assert elsewhere.exists()
+        assert (elsewhere / "2026-10-19 1405.md").exists()
 
 
 class TestRuntimeOptions:
@@ -1267,13 +1314,13 @@ class TestRuntimeOptions:
         assert config.summarization.enabled is True
 
 
-class TestExportWithoutSummary:
+class TestNotesWithoutSummary:
     def test_titled_after_the_app_and_recording_deleted(self, tmp_path, monkeypatch):
         import json
 
         from ownscribe.pipeline import _do_transcribe_and_summarize
 
-        out_dir = tmp_path / "2026-10-19_1405"
+        out_dir = tmp_path / "2026-10-19 1405"
         out_dir.mkdir()
         audio_path = out_dir / "recording.wav"
         for name in ("recording.wav", "recording.me.wav", "recording.them.wav"):
@@ -1282,10 +1329,10 @@ class TestExportWithoutSummary:
         transcriber.transcribe.return_value = TranscriptResult(segments=[Segment(text="Hi.", start=0, end=1)])
 
         config = Config()
+        config.output.dir = str(tmp_path)
         config.speakers.mode = "none"
         config.summarization.enabled = False
         config.output.keep_recording = False
-        config.export.dir = str(tmp_path / "export")
         monkeypatch.setenv("OWNSCRIBE_SOURCE_APP", "Zoom")
         monkeypatch.setenv("OWNSCRIBE_RESULT_FILE", str(tmp_path / "result.json"))
 
@@ -1293,7 +1340,53 @@ class TestExportWithoutSummary:
             _do_transcribe_and_summarize(config, audio_path, out_dir, summarize=True)
 
         paths = json.loads((tmp_path / "result.json").read_text())
+        final_dir = tmp_path / "2026-10-19 1405 - Zoom call"
         assert "summary" not in paths
-        assert paths["export"].endswith("2026-10-19 1405 - Zoom call.md")
-        assert "# Zoom call" in (tmp_path / "export" / "2026-10-19 1405 - Zoom call.md").read_text()
-        assert sorted(p.name for p in out_dir.iterdir()) == ["transcript.md"]
+        assert paths["notes"] == str(final_dir / "2026-10-19 1405 - Zoom call.md")
+        assert "# Zoom call" in (final_dir / "2026-10-19 1405 - Zoom call.md").read_text()
+        assert sorted(p.name for p in final_dir.iterdir()) == ["2026-10-19 1405 - Zoom call.md", "transcript.md"]
+
+
+class TestNoSpeech:
+    def test_empty_transcript_skips_summary_and_export(self, tmp_path, monkeypatch, capsys):
+        import json
+
+        import numpy as np
+        import soundfile as sf
+
+        from ownscribe.pipeline import _do_transcribe_and_summarize
+
+        out_dir = tmp_path / "2026-10-19 1405"
+        out_dir.mkdir()
+        audio_path = out_dir / "recording.wav"
+        noise = (0.001 * np.random.default_rng(0).standard_normal(24000 * 5)).astype(np.float32)
+        sf.write(out_dir / "recording.wav", noise, 24000)
+        sf.write(out_dir / "recording.me.wav", noise, 24000)
+        sf.write(out_dir / "recording.them.wav", np.zeros(24000 * 5, dtype=np.float32), 24000)
+
+        transcriber = mock.MagicMock()
+        transcriber.transcribe.return_value = TranscriptResult(segments=[], language="en", duration=5.0)
+        summarizer = mock.MagicMock()
+
+        config = Config()
+        config.output.dir = str(tmp_path)
+        config.output.keep_recording = False
+        config.summarization.enabled = True
+        monkeypatch.setenv("OWNSCRIBE_RESULT_FILE", str(tmp_path / "result.json"))
+
+        with (
+            mock.patch("ownscribe.pipeline._create_transcriber", return_value=transcriber),
+            mock.patch("ownscribe.pipeline.create_summarizer", return_value=summarizer),
+        ):
+            _do_transcribe_and_summarize(config, audio_path, out_dir, summarize=True)
+
+        summarizer.summarize.assert_not_called()
+        final_dir = tmp_path / "2026-10-19 1405 - Recording"
+        assert sorted(p.name for p in final_dir.iterdir()) == ["transcript.md"]
+        paths = json.loads((tmp_path / "result.json").read_text())
+        assert paths["speech"] == "none"
+        assert paths["system_audio"] == "silent"
+        assert "summary" not in paths
+        err = capsys.readouterr().err
+        assert "no speech was detected" in err
+        assert "system-audio track is completely silent" in err

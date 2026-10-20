@@ -7,15 +7,12 @@ can pick up the title, date and participants.
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime
 from pathlib import Path
 
 from ownscribe.output.markdown import _format_time, format_transcript
+from ownscribe.output.naming import folder_name, parse_folder_name, safe_title, stamp_for, unique_path
 from ownscribe.transcription.models import TranscriptResult
-
-_UNSAFE_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]+')
-_OUTPUT_DIR_STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2})_(\d{4})")
 
 
 def resolve_export_dir(setting: str, home: Path | None = None) -> Path | None:
@@ -37,19 +34,18 @@ def resolve_export_dir(setting: str, home: Path | None = None) -> Path | None:
 
 
 def started_at(out_dir: Path) -> datetime:
-    """Recording start time from an output folder named YYYY-MM-DD_HHMM[...]; else now."""
-    if m := _OUTPUT_DIR_STAMP.match(out_dir.name):
+    """Recording start time from the recording folder's name; else now."""
+    parsed = parse_folder_name(out_dir.name)
+    if parsed is not None:
         try:
-            return datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H%M")
+            return parsed.started
         except ValueError:
             pass
     return datetime.now()
 
 
 def export_filename(started: datetime, title: str) -> str:
-    safe_title = _UNSAFE_FILENAME_CHARS.sub(" ", title).strip(" .") or "Meeting"
-    safe_title = re.sub(r"\s+", " ", safe_title)[:80].rstrip(" .")
-    return f"{started:%Y-%m-%d %H%M} - {safe_title}.md"
+    return folder_name(stamp_for(started), safe_title(title) or "Meeting") + ".md"
 
 
 def _yaml(value: str) -> str:
@@ -94,10 +90,6 @@ def format_export(
 def write_export(export_dir: Path, filename: str, content: str) -> Path:
     """Write *content* to export_dir/filename, never overwriting an existing file."""
     export_dir.mkdir(parents=True, exist_ok=True)
-    path = export_dir / filename
-    n = 2
-    while path.exists():
-        path = export_dir / f"{Path(filename).stem} ({n}).md"
-        n += 1
+    path = unique_path(export_dir / filename, ".md")
     path.write_text(content)
     return path

@@ -37,8 +37,9 @@ format = "markdown"
 keep_recording = false     # audio is deleted once transcribed; keep it with "Save Recording" in the menu
 
 [export]
-# One Markdown file per meeting (title, date, speakers, summary, transcript), ready to
-# upload to Glean. Set to "auto" to save into a "Meeting Notes" folder in your work
-# OneDrive instead (that syncs to the cloud), or "" to turn exports off.
-dir = "~/ownscribe/Exports"
+# Each recording gets one folder in ~/ownscribe, e.g. "2026-10-19 1405 - Spec handoff", holding
+# "2026-10-19 1405 - Spec handoff.md" (title, date, speakers, summary, transcript; ready to
+# upload to Glean), transcript.md, summary.md (if on) and the audio (if saved).
+notes = true
 include_transcript = true
+copy_to = ""               # also copy each notes file here; "auto" = "Meeting Notes" in your work OneDrive

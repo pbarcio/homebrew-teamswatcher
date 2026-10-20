@@ -45,6 +45,7 @@ class TestResolveExportDir:
 
 class TestNaming:
     def test_started_at_from_output_dir(self):
+        assert started_at(Path("2026-10-19 1405 - MAWM sync")) == datetime(2026, 10, 19, 14, 5)
         assert started_at(Path("2026-10-19_1405_mawm-sync")) == datetime(2026, 10, 19, 14, 5)
 
     def test_filename_is_safe(self):

@@ -63,9 +63,9 @@ format = "markdown"       # "markdown" or "json"
 keep_recording = true     # keep WAV files after transcription; false = auto-delete
 
 [export]
-dir = ""                  # also save title + summary + transcript as one Markdown file here;
-                          # "auto" = a "Meeting Notes" folder in your work OneDrive; empty = off
+notes = true              # save "<folder name>.md" (title, summary, transcript) in each recording's folder
 include_transcript = true
+copy_to = ""              # also copy the notes file here; "auto" = "Meeting Notes" in your work OneDrive
 """
 
 
@@ -128,10 +128,26 @@ def _account_name() -> str:
     return gecos.split(",")[0].strip()
 
 
+# Default export folder of earlier fork versions; notes now live in each recording's folder.
+_LEGACY_EXPORT_DIR = "~/ownscribe/Exports"
+
+
 @dataclass
 class ExportConfig:
-    dir: str = ""  # "" = off; "auto" = work OneDrive "Meeting Notes"; or a path
+    notes: bool = True  # write the one-file notes into the recording's folder
     include_transcript: bool = True
+    copy_to: str = ""  # "" = no extra copy; "auto" = work OneDrive "Meeting Notes"; or a path
+    dir: str = ""  # deprecated: earlier name for copy_to
+
+    @property
+    def copy_target(self) -> str:
+        """Where to copy notes to, honouring the old `dir` setting unless it was the old default."""
+        if self.copy_to.strip():
+            return self.copy_to.strip()
+        legacy = self.dir.strip()
+        if legacy and legacy.rstrip("/") != _LEGACY_EXPORT_DIR:
+            return legacy
+        return ""
 
 
 @dataclass

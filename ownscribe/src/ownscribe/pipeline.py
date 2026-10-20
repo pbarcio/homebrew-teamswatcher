@@ -60,10 +60,11 @@ def _check_audio_silence(audio_path: Path) -> None:
 
 
 def _get_output_dir(config: Config) -> Path:
-    """Create and return a timestamped output directory."""
+    """Create and return this recording's folder, named "YYYY-MM-DD HHMM" until it gets a title."""
+    from ownscribe.output.naming import stamp_for, unique_path
+
     base = config.output.resolved_dir
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
-    out_dir = base / timestamp
+    out_dir = unique_path(base / stamp_for(datetime.now()))
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
 
@@ -250,36 +251,84 @@ def _transcribe(config: Config, transcriber, audio_path: Path):
     return result
 
 
-def _write_export(config: Config, out_dir: Path, result, summary: str | None, title: str) -> Path | None:
-    """Save the one-file Markdown export, if enabled. Never fails the run."""
-    from ownscribe.output.export import (
-        export_filename,
-        format_export,
-        resolve_export_dir,
-        started_at,
-        write_export,
-    )
+def _default_title() -> str:
+    """Title when there is no summary to generate one from: the app that was recorded."""
+    source = os.environ.get("OWNSCRIBE_SOURCE_APP", "").strip()
+    return f"{source} call" if source else "Recording"
 
-    export_dir = resolve_export_dir(config.export.dir)
-    if export_dir is None:
+
+def _rename_dir_to(directory: Path, target: Path) -> Path:
+    """Rename *directory* to *target*; returns the original path if that fails."""
+    try:
+        directory.rename(target)
+        return target
+    except OSError as e:
+        logging.getLogger(__name__).warning("Could not rename %s to %s: %s", directory.name, target.name, e)
+        return directory
+
+
+def _finalize_folder(config: Config, out_dir: Path, audio_path: Path, title: str) -> tuple[Path, Path]:
+    """Rename this recording's folder to "YYYY-MM-DD HHMM - Title" (audio folder too, if separate).
+
+    Only folders ownscribe created in the output directory are renamed, never a folder
+    that `ownscribe resume`/`transcribe` was pointed at elsewhere.
+    """
+    from ownscribe.output.naming import folder_name, parse_folder_name, unique_path
+
+    parsed = parse_folder_name(out_dir.name)
+    try:
+        in_output_dir = out_dir.parent.resolve() == config.output.resolved_dir.resolve()
+    except OSError:
+        in_output_dir = False
+    if parsed is None or not in_output_dir:
+        return out_dir, audio_path
+
+    new_name = folder_name(parsed.stamp, title)
+    if new_name == out_dir.name:
+        return out_dir, audio_path
+
+    old_out_dir = out_dir
+    out_dir = _rename_dir_to(out_dir, unique_path(out_dir.parent / new_name))
+    audio_dir = audio_path.parent
+    if audio_dir == old_out_dir:
+        audio_dir = out_dir
+    elif config.output.uses_separate_audio_dir and out_dir != old_out_dir and audio_dir.name == old_out_dir.name:
+        audio_dir = _rename_dir_to(audio_dir, unique_path(audio_dir.parent / out_dir.name))
+    return out_dir, audio_dir / audio_path.name
+
+
+def _write_notes(config: Config, out_dir: Path, result, summary: str | None, title: str) -> Path | None:
+    """Save the one-file notes ("<folder name>.md") in the recording's folder, plus an
+    optional copy elsewhere. Never fails the run; returns the notes path."""
+    from ownscribe.output.export import format_export, resolve_export_dir, started_at, write_export
+
+    if not config.export.notes:
         return None
     source = os.environ.get("OWNSCRIBE_SOURCE_APP", "").strip()
+    content = format_export(
+        title=title,
+        started=started_at(out_dir),
+        result=result,
+        summary=summary,
+        source=source,
+        include_transcript=config.export.include_transcript,
+    )
+    filename = f"{out_dir.name}.md"
+    notes_path = out_dir / filename
     try:
-        started = started_at(out_dir)
-        # Without a summary there is no generated title; name it after the app instead.
-        title = title or (f"{source} call" if source else "Meeting")
-        content = format_export(
-            title=title,
-            started=started,
-            result=result,
-            summary=summary,
-            source=source,
-            include_transcript=config.export.include_transcript,
-        )
-        return write_export(export_dir, export_filename(started, title), content)
+        notes_path.write_text(content)
     except OSError as exc:
-        click.echo(f"Warning: could not write the export to {export_dir}: {exc}", err=True)
+        click.echo(f"Warning: could not write notes to {notes_path}: {exc}", err=True)
         return None
+
+    copy_dir = resolve_export_dir(config.export.copy_target)
+    if copy_dir is not None:
+        try:
+            copied = write_export(copy_dir, filename, content)
+            click.echo(f"Copied notes to {copied}")
+        except OSError as exc:
+            click.echo(f"Warning: could not copy notes to {copy_dir}: {exc}", err=True)
+    return notes_path
 
 
 def _apply_runtime_options(config: Config) -> None:
@@ -303,10 +352,32 @@ def _apply_runtime_options(config: Config) -> None:
         config.output.keep_recording = data["keep_recording"]
 
 
-def _write_result_file(**paths: Path | None) -> None:
+def _system_audio_was_silent(audio_path: Path) -> bool:
+    """True when the system-audio (them) track exists and is digital silence throughout.
+
+    Exact zeros for a whole recording mean no app audio reached the recorder at all,
+    which usually points at a missing Screen & System Audio Recording permission.
+    """
+    from ownscribe.transcription.channels import split_track_paths
+
+    _, them = split_track_paths(audio_path)
+    if not them.exists():
+        return False
+    try:
+        import numpy as np
+        import soundfile as sf
+
+        samples, _ = sf.read(them, dtype="float32", always_2d=False)
+    except Exception:
+        return False
+    return samples.size > 0 and float(np.max(np.abs(samples))) == 0.0
+
+
+def _write_result_file(**paths: Path | str | None) -> None:
     """Tell a launcher (e.g. TeamsWatcher) where the outputs ended up.
 
-    Written only when OWNSCRIBE_RESULT_FILE is set.
+    Written only when OWNSCRIBE_RESULT_FILE is set. Values are paths, plus
+    "speech": "none" when nothing was transcribed.
     """
     target = os.environ.get("OWNSCRIBE_RESULT_FILE")
     if not target:
@@ -576,7 +647,7 @@ def run_summarize(config: Config, transcript_file: str) -> None:
                     )
                     raise SystemExit(1) from None
             summary = summarizer.summarize(transcript_text)
-            title_slug = _generate_title_slug(summary, summarizer)
+            title = _generate_title(summary, summarizer)
             progress.complete("summarizing")
     finally:
         summarizer.close()
@@ -585,21 +656,16 @@ def run_summarize(config: Config, transcript_file: str) -> None:
     summary_path = out_dir / "summary.md"
     summary_path.write_text(summary_md)
 
-    if title_slug:
-        out_dir, old_out_dir = _rename_output_dir(out_dir, title_slug), out_dir
-        # If a separate audio_dir is configured, rename like out_dir, but only
-        # if audio_dir actually exists -- run_summarize can run on a transcript
-        # regardless of a recording -- and if out_dir was renamed successfully.
-        # Require the transcript to live in the output tree so summarizing a
-        # transcript elsewhere cannot rename an unrelated audio directory whose
-        # name happens to match.
-        if (
-            config.output.uses_separate_audio_dir
-            and old_out_dir.parent == config.output.resolved_dir
-        ):
-            audio_dir = config.output.resolved_audio_dir / old_out_dir.name
-            if audio_dir.is_dir() and out_dir != old_out_dir:
-                _rename_output_dir(audio_dir, title_slug)
+    if title:
+        # Retitle the recording's folder ("YYYY-MM-DD HHMM - Title"), and a separate
+        # audio folder of the same name if one exists. _finalize_folder leaves folders
+        # outside the output tree alone.
+        audio_dir = out_dir
+        if config.output.uses_separate_audio_dir:
+            candidate = config.output.resolved_audio_dir / out_dir.name
+            if candidate.is_dir():
+                audio_dir = candidate
+        out_dir, _ = _finalize_folder(config, out_dir, audio_dir / "recording.wav", title)
 
     summary_path = out_dir / "summary.md"
 
@@ -624,7 +690,6 @@ def _do_transcribe_and_summarize(
     summary = None
     summary_str = None
     title = ""
-    title_slug = ""
     sum_unavailable = False
     sum_failed = False
 
@@ -645,6 +710,8 @@ def _do_transcribe_and_summarize(
             raise SystemExit(1) from None
 
         result = _transcribe(config, transcriber, audio_path)
+        no_speech = not any(seg.text.strip() for seg in result.segments)
+        system_silent = config.speakers.mode == "channels" and _system_audio_was_silent(audio_path)
 
         # Save transcript — silent, no echo
         transcript_str, _ = _format_output(config, result)
@@ -652,7 +719,10 @@ def _do_transcribe_and_summarize(
         transcript_path = out_dir / f"transcript.{ext}"
         transcript_path.write_text(transcript_str)
 
-        if sum_enabled:
+        # Nothing to summarize: an LLM given an empty transcript just asks for one.
+        if sum_enabled and no_speech:
+            progress.complete("summarizing")
+        elif sum_enabled:
             try:
                 summarizer = create_summarizer(config)
             except ImportError as exc:
@@ -677,7 +747,6 @@ def _do_transcribe_and_summarize(
                         summary_path = out_dir / f"summary.{ext}"
                         summary_path.write_text(summary_str or summary)
                         title = _generate_title(summary, summarizer)
-                        title_slug = _slugify(title)
                         progress.complete("summarizing")
                     except Exception:
                         progress.fail("summarizing")
@@ -687,6 +756,16 @@ def _do_transcribe_and_summarize(
 
     # --- All user-facing output after TUI exits ---
     click.echo(f"Transcript saved to {transcript_path}")
+
+    if no_speech:
+        click.echo("\nWarning: no speech was detected, so there is nothing to summarize or export.", err=True)
+    if system_silent:
+        click.echo(
+            "Warning: the system-audio track is completely silent; no call or app audio was captured.\n"
+            "If audio was playing, check System Settings > Privacy & Security > Screen & System Audio "
+            "Recording for the app that started ownscribe (TeamsWatcher or your terminal), then restart it.",
+            err=True,
+        )
 
     if sum_unavailable:
         if config.summarization.backend == "local":
@@ -715,36 +794,29 @@ def _do_transcribe_and_summarize(
         # summary.json holds machine-readable JSON; the console still shows the text.
         displayed = summary if config.output.format == "json" else (summary_str or summary)
         click.echo(f"\n{displayed}")
-        if title_slug:
-            out_dir, old_out_dir = _rename_output_dir(out_dir, title_slug), out_dir
-            audio_dir = audio_path.parent
-            # If the audio lives in its own directory (separate audio_dir
-            # configured and the recording not colocated with the text output,
-            # as when resuming a directory recorded before audio_dir was set),
-            # rename it like out_dir, but only if out_dir was renamed
-            # successfully.
-            if config.output.uses_separate_audio_dir and audio_dir != old_out_dir:
-                if out_dir != old_out_dir:
-                    audio_dir = _rename_output_dir(audio_dir, title_slug)
-            # Otherwise the audio follows out_dir: adjust audio_dir and
-            # audio_path according to the new name of out_dir.
-            else:
-                audio_dir = out_dir
-            audio_path = audio_dir / audio_path.name
     elif not summarize:
         click.echo(f"\n{transcript_str}")
 
-    # The output folder may have been renamed above; point at the final files.
+    # One folder per recording: "YYYY-MM-DD HHMM - Title", with the notes inside.
+    notes_path = None
+    if summarize:
+        title = title or _default_title()
+        out_dir, audio_path = _finalize_folder(config, out_dir, audio_path, title)
+        if not no_speech:
+            notes_path = _write_notes(config, out_dir, result, summary, title)
+        click.echo(f"Saved to {out_dir}")
+
     transcript_path = out_dir / transcript_path.name
     summary_path = out_dir / f"summary.{ext}" if summary is not None else None
 
-    export_path = None
-    if summarize:
-        export_path = _write_export(config, out_dir, result, summary, title)
-        if export_path:
-            click.echo(f"Exported to {export_path}")
-
-    _write_result_file(output_dir=out_dir, transcript=transcript_path, summary=summary_path, export=export_path)
+    _write_result_file(
+        output_dir=out_dir,
+        transcript=transcript_path,
+        summary=summary_path,
+        notes=notes_path,
+        speech="none" if no_speech else None,
+        system_audio="silent" if system_silent else None,
+    )
 
     # Delete recording if configured — use the (possibly renamed) audio_path
     if not config.output.keep_recording:

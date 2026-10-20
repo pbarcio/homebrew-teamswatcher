@@ -292,6 +292,21 @@ func notifyViaAppleScript(_ title: String, _ body: String) {
     try? process.run()
 }
 
+/// Opens a file, folder or URL (e.g. a System Settings pane). With `reveal`, opens the
+/// file's folder in Finder with the file selected.
+func openOrReveal(_ path: String, reveal: Bool) {
+    guard path.hasPrefix("/") else {
+        if let url = URL(string: path) { NSWorkspace.shared.open(url) }
+        return
+    }
+    let url = URL(fileURLWithPath: path)
+    if reveal, FileManager.default.fileExists(atPath: path) {
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    } else {
+        NSWorkspace.shared.open(FileManager.default.fileExists(atPath: path) ? url : url.deletingLastPathComponent())
+    }
+}
+
 // MARK: - Shell commands (updates)
 
 let shellPath = "/opt/homebrew/bin:/usr/local/bin:\(home)/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -443,6 +458,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var createSummaryItem: NSMenuItem!
     var latestNotesItem: NSMenuItem!
     var updateItem: NSMenuItem!
+    var tidyItem: NSMenuItem!
     var checkingForUpdates = false
 
     var current: Session?
@@ -496,8 +512,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    /// Shows a notification. With `open`, clicking it opens that file or folder.
-    func notify(_ title: String, _ body: String, open path: String? = nil) {
+    /// Shows a notification. With `open`, clicking it opens that file, folder or URL;
+    /// with `reveal`, it shows the file selected in its Finder folder instead.
+    func notify(_ title: String, _ body: String, open path: String? = nil, reveal: Bool = false) {
         guard config.notifications else { return }
         guard clickableNotifications else {
             notifyViaAppleScript(title, body)
@@ -506,7 +523,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        if let path { content.userInfo = ["path": path] }
+        if let path { content.userInfo = ["path": path, "reveal": reveal] }
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request) { error in
             guard let error else { return }
@@ -526,8 +543,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        if let path = response.notification.request.content.userInfo["path"] as? String {
-            DispatchQueue.main.async { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
+        let info = response.notification.request.content.userInfo
+        if let path = info["path"] as? String {
+            let reveal = info["reveal"] as? Bool ?? false
+            DispatchQueue.main.async { openOrReveal(path, reveal: reveal) }
         }
         completionHandler()
     }
@@ -561,6 +580,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         latestNotesItem = item("Open Latest Notes", #selector(openLatestNotes))
         menu.addItem(latestNotesItem)
         menu.addItem(item("Open Transcripts Folder", #selector(openTranscripts)))
+        tidyItem = item("Tidy Transcripts Folder…", #selector(tidyTranscripts))
+        tidyItem.toolTip = "One folder per recording: renames older folders and moves notes out of Exports."
+        menu.addItem(tidyItem)
         menu.addItem(item("Open Logs", #selector(openLogs)))
         menu.addItem(item("Log Audio Processes (Debug)", #selector(dumpAudioProcesses)))
         menu.addItem(item("Edit Config…", #selector(editConfig)))
@@ -620,6 +642,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         createSummaryItem.state = config.createSummary ? .on : .off
         latestNotesItem.isEnabled = latestNotesPath != nil
         updateItem.isEnabled = !checkingForUpdates
+        tidyItem.isEnabled = current == nil && processing.isEmpty
         updateItem.title = checkingForUpdates ? "Checking for Updates…" : "Check for Updates…"
     }
 
@@ -781,11 +804,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         try? FileManager.default.removeItem(at: session.optionsURL)
         log("ownscribe finished with status \(status); results=\(results); log=\(session.logURL.lastPathComponent)")
 
-        let notes = results["export"] ?? results["summary"] ?? results["transcript"] ?? results["output_dir"]
-        if status == 0, let notes {
+        // The recording's folder, with its notes file selected (or the next best file).
+        let notes = results["notes"] ?? results["summary"] ?? results["transcript"] ?? results["output_dir"]
+        if status == 0, results["system_audio"] == "silent", results["speech"] == "none" {
+            notify("No audio was captured",
+                   "Nothing from the call reached the recorder. Check Screen & System Audio Recording permission for TeamsWatcher.",
+                   open: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+        } else if status == 0, results["speech"] == "none" {
+            notify("No speech was detected", "Nothing was transcribed. Click to see the log.", open: session.logURL.path)
+        } else if status == 0, let notes {
             latestNotesPath = notes
             let name = (notes as NSString).lastPathComponent
-            notify("Meeting notes ready", "Click to open \(name)", open: notes)
+            if results["system_audio"] == "silent" {
+                notify("Meeting notes ready (your mic only)",
+                       "No call audio was captured; check Screen & System Audio Recording permission. Click to show \(name)",
+                       open: notes, reveal: true)
+            } else {
+                notify("Meeting notes ready", "Click to show \(name) in Finder", open: notes, reveal: true)
+            }
         } else if status == 0 {
             notify("Meeting notes ready", "Saved in \(config.transcriptsDir)", open: expand(config.transcriptsDir))
         } else {
@@ -916,7 +952,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc func openLatestNotes() {
         guard let path = latestNotesPath else { return }
-        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        openOrReveal(path, reveal: true)
+    }
+
+    /// Previews `ownscribe tidy`, and applies it if confirmed.
+    @objc func tidyTranscripts() {
+        guard current == nil, processing.isEmpty else { return }
+        let env = ["TW_OWNSCRIBE": expand(config.ownscribePath)]
+        runShell("\"$TW_OWNSCRIBE\" tidy", env: env) { status, output in
+            let text = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard status == 0 else {
+                self.showAlert("Couldn't check the transcripts folder", text)
+                return
+            }
+            if text.contains("already tidy") {
+                self.showAlert("The transcripts folder is already tidy", "")
+                return
+            }
+            let preview = text.components(separatedBy: "\n")
+                .filter { !$0.hasPrefix("Nothing has been changed") }
+            let shown: [String] = preview.count > 40
+                ? Array(preview.prefix(40)) + ["  …and \(preview.count - 40) more lines"]
+                : preview
+            NSApp.activate()
+            let alert = NSAlert()
+            alert.messageText = "Tidy the transcripts folder?"
+            alert.informativeText = shown.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            alert.addButton(withTitle: "Tidy")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            runShell("\"$TW_OWNSCRIBE\" tidy --apply", env: env) { status, output in
+                log("Tidy finished with status \(status)")
+                if status == 0 && !output.contains("Warning:") {
+                    self.openTranscripts()
+                } else {
+                    self.showAlert("Tidy finished with problems", output.trimmingCharacters(in: .whitespacesAndNewlines))
+                }
+            }
+        }
     }
 
     @objc func openTranscripts() {
