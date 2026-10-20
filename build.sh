@@ -10,9 +10,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 swiftc -O -swift-version 5 \
   -target arm64-apple-macos14.2 \
-  -framework AppKit -framework CoreAudio -framework UserNotifications \
+  -framework AppKit -framework CoreAudio -framework UserNotifications -framework SwiftUI \
   -o "$APP/Contents/MacOS/TeamsWatcher" \
-  main.swift
+  main.swift Settings.swift
 
 cp Info.plist "$APP/Contents/Info.plist"
 
@@ -27,7 +27,7 @@ done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
 # Fingerprint of the source, so setup can skip rebuilds (and keep macOS permissions).
-cat main.swift Info.plist AppIcon.png | shasum -a 256 | cut -c1-16 > "$APP/Contents/Resources/source-hash"
+cat main.swift Settings.swift Info.plist AppIcon.png | shasum -a 256 | cut -c1-16 > "$APP/Contents/Resources/source-hash"
 
 codesign --force --sign - "$APP"
 

@@ -265,6 +265,42 @@ def config_cmd() -> None:
     subprocess.run([editor, str(path)])
 
 
+@cli.group()
+def settings() -> None:
+    """Read or change settings in config.toml (used by TeamsWatcher's Settings window)."""
+
+
+@settings.command("show")
+def settings_show() -> None:
+    """Print the editable settings as JSON."""
+    import json
+
+    from ownscribe.config import CONFIG_PATH
+    from ownscribe.settings_file import current_values
+
+    click.echo(json.dumps(current_values(CONFIG_PATH), indent=2, ensure_ascii=False))
+
+
+@settings.command("set")
+@click.option("--json", "changes_json", required=True, help='Changes as JSON, e.g. \'{"speakers.me": "Pierce"}\'.')
+def settings_set(changes_json: str) -> None:
+    """Change settings, keeping the rest of config.toml (comments included) as it is."""
+    import json
+
+    from ownscribe.config import CONFIG_PATH
+    from ownscribe.settings_file import SettingsError, apply_changes
+
+    try:
+        changes = json.loads(changes_json)
+        if not isinstance(changes, dict):
+            raise SettingsError("--json must be an object")
+        apply_changes(CONFIG_PATH, changes)
+    except (ValueError, OSError) as exc:  # SettingsError and JSON errors are ValueErrors
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1) from None
+    click.echo(f"Saved {CONFIG_PATH}")
+
+
 @cli.command()
 @click.option("--apply", "apply_changes", is_flag=True, help="Make the changes (without it, only show them).")
 @click.pass_context

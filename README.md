@@ -53,7 +53,7 @@ The title comes from the summary. Without a summary, it's the app's name, such a
 | Open Transcripts Folder | Open `~/ownscribe`. |
 | Tidy Transcripts Folder… | Convert older recordings to one folder each (see above). |
 | Open Logs / Log Audio Processes (Debug) | For troubleshooting. |
-| Edit Config… / Reload Config | Change settings (see below). |
+| Settings… (⌘,) | Change how TeamsWatcher records and transcribes (see Settings). |
 | Check for Updates… | Install the latest release. |
 
 The menu bar icon shows what's happening: microphone = watching, red microphone = recording, hourglass = processing, crossed-out microphone = paused.
@@ -86,7 +86,7 @@ From Terminal, the equivalent is `brew update && brew upgrade teamswatcher && te
 
 ## Meeting apps
 
-Teams, Zoom and Webex are on by default. To change the list, choose **Edit Config…**, set `"enabled"` for an app under `meetingApps`, save, and choose **Reload Config**.
+Teams, Zoom and Webex are on by default. To change the list, open **Settings… › Meeting Apps** and check or uncheck apps.
 
 | App | Default | Note |
 |---|---|---|
@@ -94,7 +94,7 @@ Teams, Zoom and Webex are on by default. To change the list, choose **Edit Confi
 | Slack huddles | off | |
 | Google Chrome, Microsoft Edge, Safari | off | Any website using the mic would start a recording (Google Meet, Teams on the web, and so on). |
 
-To add another app, add an entry with a `name`, its `bundlePrefixes`, and `"enabled": true`. Find an app's bundle ID with `osascript -e 'id of app "AppName"'`.
+To add another app, enter its name and bundle ID under **Add another app** on the same tab. Find an app's bundle ID with `osascript -e 'id of app "AppName"'`.
 
 Recording starts once the app has held the mic for **10 seconds**, which keeps device tests from triggering it, and stops after the app has released it for **30 seconds**. While recording, only the meeting app's audio and your mic are captured, so music or videos playing elsewhere on the Mac aren't included.
 
@@ -107,33 +107,26 @@ Calls can switch between English and Spanish at any moment, mid-conversation or 
 - Very short replies like "sí" or "OK" keep the language of the surrounding conversation, unless they're clearly the other one.
 - A switch in the middle of a sentence, with no pause, is transcribed in whichever language most of that stretch was in.
 - The summary is written in English, covering both languages.
-- To change the languages, edit `languages` in `~/.config/ownscribe/config.toml`, e.g. `["en", "es", "pt"]`, or `["en"]` for English-only calls. Mixed-language calls need the default GPU (`mlx`) backend.
+- To change the languages, open **Settings… › Transcription**: uncheck Spanish for English-only calls, or add other language codes such as `pt`. Mixed-language calls need the default GPU (`mlx`) backend.
 
 ## Settings
 
-**Transcription settings** are in `~/.config/ownscribe/config.toml`. Setup never overwrites edits you've made there. If the defaults change in a later release, the new defaults are saved alongside as `config.toml.new` for you to merge.
+Choose **Settings…** from the menu (or press ⌘, while the menu is open). Changes take effect when you click **Save**. Save Recording and Create Summary also apply to a call that's already being recorded.
 
-| Setting | Default | Purpose |
-|---|---|---|
-| `[speakers] me` | your macOS name | Your label in transcripts |
-| `[speakers] them` | `Them` | Label for everyone else |
-| `[transcription] languages` | `["en", "es"]` | Languages a call may switch between (see Languages) |
-| `[transcription] model` | `large-v3-turbo` | `medium` is lighter; `backend = "whisperx"` uses the CPU instead of the GPU, with one language per recording |
-| `[transcription] initial_prompt`, `hotwords` | integration terms | Vocabulary Whisper would otherwise mishear |
-| `[export] copy_to` | off | Also copy each notes file to a folder; `"auto"` = a "Meeting Notes" folder in your work OneDrive (which syncs to the cloud) |
-| `[export] include_transcript` | true | Include the transcript in the notes file |
+| Tab | What you can change |
+|---|---|
+| **General** | Save Recording and Create Summary; record only the meeting app's audio or everything the Mac plays; how long the mic must be in use before recording starts (10 s) and released before it stops (30 s); notifications |
+| **Meeting Apps** | Which apps start a recording; add or remove other apps |
+| **Transcription** | Your name and the label for everyone else; the languages spoken in your calls; the Whisper model; vocabulary hints such as product, system and client names |
+| **Notes** | The recordings folder; whether to write a notes file and include the transcript in it; an extra copy of each notes file in your work OneDrive or another folder |
+| **Advanced** | Open the settings files, for settings not shown in the window, and reload them after editing by hand |
 
-**TeamsWatcher settings** are in `~/.config/teamswatcher/config.json`. Open it with **Edit Config…**, then choose **Reload Config**.
+The settings are stored in two files:
 
-| Key | Default | Purpose |
-|---|---|---|
-| `meetingApps` | Teams, Zoom, Webex on | Which apps start a recording |
-| `startDebounceSeconds` | 10 | How long the app must hold the mic before recording starts |
-| `stopGraceSeconds` | 30 | How long the mic must be released before recording stops |
-| `captureAppAudioOnly` | true | Record only the meeting app's audio; `false` = everything the Mac plays |
-| `saveRecording`, `createSummary` | false | Same as the menu options |
-| `notifications` | true | Start, stop and notes-ready notifications |
-| `extraArgs` | `[]` | Extra ownscribe flags, e.g. `["--template", "lecture"]` |
+- `~/.config/teamswatcher/config.json`: recording, meeting apps and notifications.
+- `~/.config/ownscribe/config.toml`: transcription and notes. Saving from the window changes only the lines for the settings you changed and keeps the file's comments. Updates never overwrite your changes to this file. If a later release changes its defaults, they're saved alongside as `config.toml.new` for you to merge.
+
+A few settings exist only in the files, such as `extraArgs` (extra ownscribe flags) in `config.json`, and `backend = "whisperx"` (CPU instead of GPU, one language per recording) in `config.toml`.
 
 ## Troubleshooting
 
@@ -141,7 +134,7 @@ Calls can switch between English and Spanish at any moment, mid-conversation or 
 
 **Testing it.** In Teams, go to Settings > Devices > Make a test call. It starts recording just like a real meeting. Or, with no meeting app open, choose **Start Recording Now**, play a video on the Mac, and talk over it. Sound from a TV or another device only reaches your mic, which records it as you, and usually too quietly to transcribe.
 
-**A call wasn't detected.** Join a test call, then choose **Log Audio Processes (Debug)**. The meeting app should be listed with `in=true`. Also check that `in=true` stays on when you mute yourself; if it drops, increase `stopGraceSeconds`.
+**A call wasn't detected.** Join a test call, then choose **Log Audio Processes (Debug)**. The meeting app should be listed with `in=true`. Also check that `in=true` stays on when you mute yourself; if it drops, increase the stop delay in **Settings… › General**.
 
 **Notifications can't be clicked.** Allow notifications for TeamsWatcher in System Settings > Notifications.
 
@@ -172,7 +165,7 @@ Tell people when you're transcribing a call, especially clients. Some places and
 
 | Path | What it is |
 |---|---|
-| `main.swift`, `Info.plist`, `build.sh` | The TeamsWatcher menu bar app |
+| `main.swift`, `Settings.swift`, `Info.plist`, `build.sh` | The TeamsWatcher menu bar app and its Settings window |
 | `AppIcon.png`, `tools/make_icon.py` | The app icon and the script that draws it (`python3 tools/make_icon.py AppIcon.png`, needs Pillow) |
 | `ownscribe/` | The ownscribe fork: transcription, labels, notes, `tidy`. See `ownscribe/FORK.md` for how it differs from upstream. |
 | `ownscribe-config.toml` | Default transcription settings installed by setup |

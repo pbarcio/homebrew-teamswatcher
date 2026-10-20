@@ -12,6 +12,7 @@ This is [paberr/ownscribe](https://github.com/paberr/ownscribe) 0.15.0 (MIT) wit
 | **Notes file.** Each folder gets `<folder name>.md` with front matter, summary and transcript; `[export] copy_to` optionally copies it elsewhere (`"auto"` = work OneDrive "Meeting Notes"). | `output/export.py`, `pipeline.py` |
 | **`ownscribe tidy`.** Converts older folders and the old `Exports` folder to the layout above; preview by default, `--apply` to change. Skips anything modified in the last 10 minutes. | `tidy.py`, `cli.py` |
 | **`--summarize/--no-summarize`**, an empty-transcript guard (no summary or notes when nothing was said), and a warning when the system-audio track is pure silence. | `cli.py`, `pipeline.py` |
+| **`ownscribe settings show/set`.** Reads the GUI-editable settings as JSON and changes them in config.toml line by line, keeping comments; validated with tomllib before writing. Used by TeamsWatcher's Settings window. | `settings_file.py`, `cli.py` |
 | **Launcher hand-off.** When `OWNSCRIBE_RESULT_FILE` is set, the final paths (and `speech`/`system_audio` flags) are written there as JSON. `OWNSCRIBE_SOURCE_APP` names the app in titles and notes. `OWNSCRIBE_OPTIONS_FILE` lets the launcher change "summarize"/"keep_recording" until recording stops. | `pipeline.py` |
 
 The audio helper is built from source by `teamswatcher-setup` (it isn't downloaded from upstream releases), because the flags above only exist in this fork.

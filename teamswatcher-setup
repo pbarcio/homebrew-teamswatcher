@@ -153,7 +153,7 @@ ownscribe warmup --language en
 # ---------------------------------------------------------------------------
 step "Installing $APP_NAME"
 if [[ "$MODE" == "source" ]]; then
-  src_hash="$(cat "$SRC_DIR/main.swift" "$SRC_DIR/Info.plist" "$SRC_DIR/AppIcon.png" | shasum -a 256 | cut -c1-16)"
+  src_hash="$(cat "$SRC_DIR/main.swift" "$SRC_DIR/Settings.swift" "$SRC_DIR/Info.plist" "$SRC_DIR/AppIcon.png" | shasum -a 256 | cut -c1-16)"
 else
   src_hash="$(cat "$SRC_APP/Contents/Resources/source-hash" 2>/dev/null || echo unknown)"
 fi

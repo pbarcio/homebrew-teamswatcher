@@ -7,12 +7,14 @@
 import AppKit
 import CoreAudio
 import Darwin
+import SwiftUI
 import UserNotifications
 
 // MARK: - Paths, formatting, logging
 
 let home = FileManager.default.homeDirectoryForCurrentUser.path
 let configPath = expand("~/.config/teamswatcher/config.json")
+let ownscribeConfigPath = expand("~/.config/ownscribe/config.toml")
 var logDirectory = expand("~/Library/Logs/TeamsWatcher")
 
 func expand(_ path: String) -> String { (path as NSString).expandingTildeInPath }
@@ -307,6 +309,13 @@ func openOrReveal(_ path: String, reveal: Bool) {
     }
 }
 
+func openInTextEditor(_ path: String) {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    process.arguments = ["-t", path]
+    try? process.run()
+}
+
 // MARK: - Shell commands (updates)
 
 let shellPath = "/opt/homebrew/bin:/usr/local/bin:\(home)/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -459,6 +468,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var latestNotesItem: NSMenuItem!
     var updateItem: NSMenuItem!
     var tidyItem: NSMenuItem!
+    var settingsWindow: NSWindow?
+    var settingsModel: SettingsModel?
     var checkingForUpdates = false
 
     var current: Session?
@@ -585,8 +596,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         menu.addItem(tidyItem)
         menu.addItem(item("Open Logs", #selector(openLogs)))
         menu.addItem(item("Log Audio Processes (Debug)", #selector(dumpAudioProcesses)))
-        menu.addItem(item("Edit Config…", #selector(editConfig)))
-        menu.addItem(item("Reload Config", #selector(reloadConfig)))
+        let settingsItem = item("Settings…", #selector(openSettings))
+        settingsItem.keyEquivalent = ","
+        menu.addItem(settingsItem)
         menu.addItem(.separator())
         updateItem = item("Check for Updates…", #selector(checkForUpdates))
         menu.addItem(updateItem)
@@ -1015,11 +1027,116 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSWorkspace.shared.open(logFileURL)
     }
 
+    // MARK: Settings window
+
+    @objc func openSettings() {
+        if let window = settingsWindow, window.isVisible {
+            NSApp.activate()
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        let model = SettingsModel()
+        model.load(from: config)
+        settingsModel = model
+        loadTranscriptionSettings(into: model)
+
+        let view = SettingsView(
+            model: model,
+            onSave: { [weak self] in self?.saveSettings() },
+            onCancel: { [weak self] in self?.settingsWindow?.close() },
+            openTeamsWatcherFile: { [weak self] in self?.editConfig() },
+            openTranscriptionFile: { openInTextEditor(ownscribeConfigPath) },
+            reload: { [weak self] in
+                guard let self else { return }
+                self.reloadConfig()
+                model.load(from: self.config)
+                self.loadTranscriptionSettings(into: model)
+            }
+        )
+        let window = NSWindow(contentViewController: NSHostingController(rootView: view))
+        window.title = "TeamsWatcher Settings"
+        window.styleMask = [.titled, .closable]
+        window.isReleasedWhenClosed = false
+        window.center()
+        settingsWindow = window
+        NSApp.activate()
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    /// Reads the transcription settings with `ownscribe settings show`.
+    func loadTranscriptionSettings(into model: SettingsModel) {
+        model.transcriptionLoaded = false
+        model.transcriptionError = nil
+        runShell("\"$TW_OWNSCRIBE\" settings show", env: ["TW_OWNSCRIBE": expand(config.ownscribePath)]) { status, output in
+            // Keep only the JSON object, in case anything else was printed.
+            if status == 0,
+               let open = output.firstIndex(of: "{"), let close = output.lastIndex(of: "}"),
+               let data = String(output[open...close]).data(using: .utf8),
+               let values = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                model.loadTranscription(values)
+            } else {
+                let detail = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                model.transcriptionError = detail.isEmpty ? "ownscribe exited with status \(status)." : detail
+                log("Couldn't read transcription settings: \(detail)")
+            }
+        }
+    }
+
+    func saveSettings() {
+        guard let model = settingsModel else { return }
+        let changes: [String: Any]
+        switch model.transcriptionChanges() {
+        case .failure(let problem):
+            model.saveError = problem.message
+            return
+        case .success(let value):
+            changes = value
+        }
+        model.saveError = nil
+
+        // TeamsWatcher's own settings take effect right away.
+        config.saveRecording = model.saveRecording
+        config.createSummary = model.createSummary
+        config.notifications = model.notifications
+        config.captureAppAudioOnly = model.captureAppAudioOnly
+        config.startDebounceSeconds = model.startDebounceSeconds
+        config.stopGraceSeconds = model.stopGraceSeconds
+        config.meetingApps = model.meetingApps.map { $0.app }
+        if model.transcriptionLoaded {
+            config.transcriptsDir = model.outputDir
+        }
+        saveConfig(config)
+        applyConfig(config)
+        current?.writeOptions(saveRecording: config.saveRecording, createSummary: config.createSummary)
+        log("Settings saved. Watching: \(config.meetingApps.filter { $0.enabled }.map { $0.name }.joined(separator: ", "))")
+        updateUI()
+
+        guard !changes.isEmpty else {
+            settingsWindow?.close()
+            return
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: changes),
+              let json = String(data: data, encoding: .utf8) else {
+            model.saveError = "Couldn't prepare the transcription settings."
+            return
+        }
+        model.saving = true
+        let env = ["TW_OWNSCRIBE": expand(config.ownscribePath), "TW_JSON": json]
+        runShell("\"$TW_OWNSCRIBE\" settings set --json \"$TW_JSON\"", env: env) { status, output in
+            model.saving = false
+            if status == 0 {
+                log("Transcription settings saved: \(changes.keys.sorted().joined(separator: ", "))")
+                self.settingsWindow?.close()
+            } else {
+                let detail = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                model.saveError = detail.replacingOccurrences(of: "Error: ", with: "")
+                log("Couldn't save transcription settings: \(detail)")
+            }
+        }
+    }
+
     @objc func editConfig() {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = ["-t", configPath]
-        try? process.run()
+        openInTextEditor(configPath)
     }
 
     @objc func reloadConfig() {
