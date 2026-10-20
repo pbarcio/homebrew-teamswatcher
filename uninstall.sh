@@ -19,8 +19,6 @@ fi
 osascript -e "tell application \"System Events\" to delete login item \"$APP_NAME\"" >/dev/null 2>&1 || true
 rm -rf "/Applications/$APP_NAME.app" "$HOME/Applications/$APP_NAME.app"
 rm -rf "$HOME/.config/teamswatcher" "$HOME/Library/Logs/TeamsWatcher"
-# The certificate setup created for signing the app (it's only used for TeamsWatcher).
-security delete-identity -c "TeamsWatcher Local Signing" >/dev/null 2>&1 || true
 echo "$APP_NAME removed. You can also remove its entries under Privacy & Security in System Settings."
 
 read -r -p "Also uninstall ownscribe and its config? [y/N] " answer

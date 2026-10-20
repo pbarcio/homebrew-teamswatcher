@@ -80,7 +80,7 @@ To install from a git checkout instead (for example, to try changes), clone the 
 
 Choose **Check for Updates…** from the menu. If a new release is out, TeamsWatcher offers to install it and restarts if the app itself changed. Updates wait until any call has finished processing.
 
-Updates keep TeamsWatcher's Microphone and Screen Recording permissions. Setup signs the app with a code-signing certificate it creates once on your Mac ("TeamsWatcher Local Signing", in your login keychain), so macOS recognizes every update as the same app. The first time setup creates it, macOS may ask whether codesign can use the key: enter your login password and choose **Always Allow**. If recordings come out silent after an update anyway, see Troubleshooting.
+When the app itself changes, macOS asks for its Microphone and Screen Recording permissions again. If recordings come out silent after an update, see Troubleshooting.
 
 From Terminal, the equivalent is `brew update && brew upgrade teamswatcher && teamswatcher-setup`. Run `brew update` first, because Homebrew only checks for new releases about once a day on its own.
 
@@ -152,7 +152,7 @@ teamswatcher-uninstall
 brew uninstall teamswatcher
 ```
 
-`teamswatcher-uninstall` removes the app, its settings and logs, its signing certificate, and optionally ownscribe. Your recordings in `~/ownscribe` are kept.
+`teamswatcher-uninstall` removes the app, its settings and logs, and optionally ownscribe. Your recordings in `~/ownscribe` are kept.
 
 ## Privacy and consent
 
