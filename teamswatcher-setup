@@ -47,6 +47,47 @@ fi
 [[ -f "$CONFIG_TEMPLATE" ]] || die "Config template not found at $CONFIG_TEMPLATE"
 [[ -f "$OWNSCRIBE_SRC/pyproject.toml" ]] || die "ownscribe source not found at $OWNSCRIBE_SRC"
 
+# --- Stable code signing ------------------------------------------------------
+# macOS keeps an app's permissions (Microphone, Screen Recording) only while its code
+# signature stays the "same app". A throwaway ad-hoc signature changes on every build, so
+# each update used to look like a new app. Signing with one long-lived certificate on this
+# Mac fixes that: grant the permissions once and they survive every update.
+SIGN_ID="TeamsWatcher Local Signing"
+BUNDLE_ID="net.barcio.teamswatcher"
+LOGIN_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+
+have_signing_identity() {
+  security find-certificate -c "$SIGN_ID" "$LOGIN_KEYCHAIN" >/dev/null 2>&1
+}
+
+# Creates a self-signed code-signing certificate (valid 10 years) in the login keychain.
+create_signing_identity() {
+  local tmp pass legacy=()
+  tmp="$(mktemp -d)"
+  pass="tw-$(od -An -N8 -tx8 /dev/urandom | tr -d ' ')"
+  printf '%s\n' \
+    '[req]' 'distinguished_name = dn' 'prompt = no' 'x509_extensions = ext' \
+    '[dn]' "CN = $SIGN_ID" \
+    '[ext]' 'basicConstraints = critical, CA:false' 'keyUsage = critical, digitalSignature' \
+    'extendedKeyUsage = critical, codeSigning' > "$tmp/cert.cnf"
+  # macOS's LibreSSL writes keychain-compatible .p12 files by default; OpenSSL 3 needs -legacy.
+  /usr/bin/openssl version | grep -q LibreSSL || legacy=(-legacy)
+  if /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -config "$tmp/cert.cnf" \
+       -keyout "$tmp/key.pem" -out "$tmp/cert.pem" >/dev/null 2>&1 \
+     && /usr/bin/openssl pkcs12 -export "${legacy[@]+"${legacy[@]}"}" -inkey "$tmp/key.pem" -in "$tmp/cert.pem" \
+       -name "$SIGN_ID" -passout "pass:$pass" -out "$tmp/identity.p12" >/dev/null 2>&1 \
+     && security import "$tmp/identity.p12" -k "$LOGIN_KEYCHAIN" -P "$pass" -T /usr/bin/codesign >/dev/null 2>&1; then
+    rm -rf "$tmp"
+    return 0
+  fi
+  rm -rf "$tmp"
+  return 1
+}
+
+app_has_stable_signature() {
+  codesign -dvv "$1" 2>&1 | grep -q "Authority=$SIGN_ID"
+}
+
 # Install to /Applications when we can write there, otherwise ~/Applications (no admin needed).
 if [[ -w /Applications ]]; then APP_DIR="/Applications"; else APP_DIR="$HOME/Applications"; fi
 APP_DEST="$APP_DIR/$APP_NAME.app"
@@ -158,6 +199,8 @@ else
   src_hash="$(cat "$SRC_APP/Contents/Resources/source-hash" 2>/dev/null || echo unknown)"
 fi
 installed_hash="$(cat "$APP_DEST/Contents/Resources/source-hash" 2>/dev/null || true)"
+was_stable=0
+if [[ -d "$APP_DEST" ]] && app_has_stable_signature "$APP_DEST"; then was_stable=1; fi
 replaced=0
 if [[ "$src_hash" == "$installed_hash" ]] && (( ! FORCE_REBUILD )); then
   echo "$APP_NAME is up to date; leaving it alone so your macOS permissions stay granted."
@@ -172,6 +215,31 @@ else
   cp -R "$SRC_APP" "$APP_DEST"
   echo "Installed to $APP_DEST"
   replaced=1
+fi
+
+# Sign with the stable identity: every fresh install, and once for an app installed before
+# this existed (that switch needs the permissions one last time).
+switched_signing=0
+if (( replaced )) || ! app_has_stable_signature "$APP_DEST"; then
+  if have_signing_identity || { echo "Creating a code-signing certificate for $APP_NAME in your login keychain"; create_signing_identity; }; then
+    if (( ! replaced )) && pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+      osascript -e "quit app \"$APP_NAME\"" >/dev/null 2>&1 || pkill -x "$APP_NAME" || true
+      sleep 1
+    fi
+    echo "Signing $APP_NAME. If macOS asks whether codesign may use the \"$SIGN_ID\" key, enter your login password and choose Always Allow."
+    if codesign --force --sign "$SIGN_ID" --identifier "$BUNDLE_ID" "$APP_DEST" >/dev/null 2>&1; then
+      echo "Signed with \"$SIGN_ID\": macOS permissions will now survive updates."
+      # Coming from an ad-hoc signed app means macOS asks one last time.
+      if [[ -n "$installed_hash" ]] && (( ! was_stable )); then switched_signing=1; fi
+      replaced=1
+    else
+      warn "Couldn't sign with \"$SIGN_ID\"; keeping the ad-hoc signature (permissions reset on updates)."
+    fi
+  else
+    warn "Couldn't create a signing certificate; keeping the ad-hoc signature (permissions reset on updates)."
+  fi
+else
+  echo "$APP_NAME is signed with \"$SIGN_ID\"."
 fi
 pgrep -x "$APP_NAME" >/dev/null 2>&1 || open "$APP_DEST"
 
@@ -197,18 +265,21 @@ fi
 
 # ---------------------------------------------------------------------------
 step "Done"
-if (( replaced )); then
-  cat <<EOF
-$APP_NAME was installed fresh, so macOS needs to approve it once:
-
-  1. Click the microphone icon in the menu bar and choose "Start Recording Now".
+grant_steps="  1. Click the microphone icon in the menu bar and choose \"Start Recording Now\".
   2. Allow the Microphone and Screen & System Audio Recording prompts.
      (If no prompt appears, enable $APP_NAME in System Settings > Privacy & Security
-     under both. If an older entry is listed, toggle it off and on.)
-  3. Choose "Stop Recording", then quit $APP_NAME from its menu and reopen it.
-
-After that it records Teams, Zoom and Webex calls automatically.
-EOF
+     under both. If an older entry is listed, remove it with the minus button and add the app again.)
+  3. Choose \"Stop Recording\", then quit $APP_NAME from its menu and reopen it."
+if [[ -z "$installed_hash" ]] && (( replaced )); then
+  printf '%s\n\n%s\n\n%s\n' "$APP_NAME is installed. Approve it once:" "$grant_steps" \
+    "After that it records Teams, Zoom and Webex calls automatically."
+elif (( switched_signing )); then
+  printf '%s\n\n%s\n\n%s\n' "$APP_NAME now has a stable signature. Approve it one last time:" "$grant_steps" \
+    "From now on, updates keep these permissions."
+elif (( replaced )) && ! app_has_stable_signature "$APP_DEST"; then
+  printf '%s\n\n%s\n' "$APP_NAME was updated, so macOS needs to approve it again:" "$grant_steps"
+elif (( replaced )); then
+  echo "$APP_NAME was updated and is running. Its permissions carry over."
 else
   echo "Everything is installed and $APP_NAME is running."
 fi
