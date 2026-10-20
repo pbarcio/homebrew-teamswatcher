@@ -381,7 +381,12 @@ func runShell(_ script: String, env extra: [String: String] = [:],
     }
 }
 
-/// Prints CURRENT=..., and OUTDATED=... (Homebrew) or BEHIND=<commits> (git checkout).
+/// Prints CURRENT=..., and LATEST=<version in the tap's formula> (Homebrew) or
+/// BEHIND=<commits> (git checkout). UNTRUSTED=1 when Homebrew refuses to use the tap.
+///
+/// The latest version is read from the tap's formula on GitHub (via git) rather than from
+/// `brew outdated`, which prints nothing at all when it can't load the formula, and that
+/// used to look like "up to date".
 let updateCheckScript = """
 if [ "$TW_MODE" = source ]; then
   cd "$TW_DIR" || { echo "ERROR=Can't open $TW_DIR"; exit 3; }
@@ -390,9 +395,15 @@ if [ "$TW_MODE" = source ]; then
   echo "BEHIND=$(git rev-list --count HEAD..@{u} 2>/dev/null || echo 0)"
 else
   command -v brew >/dev/null || { echo "ERROR=Homebrew not found"; exit 3; }
-  brew update --quiet >/dev/null 2>&1 || true
-  echo "CURRENT=$(brew list --versions teamswatcher 2>/dev/null | awk '{print $NF}')"
-  echo "OUTDATED=$(brew outdated --verbose teamswatcher 2>/dev/null | head -1)"
+  tap="$(brew --repo pbarcio/teamswatcher 2>/dev/null)"
+  [ -d "$tap/.git" ] || { echo "ERROR=The pbarcio/teamswatcher tap isn't installed. Run: brew tap pbarcio/teamswatcher"; exit 5; }
+  git -C "$tap" fetch --quiet origin 2>/dev/null || { echo "ERROR=Couldn't reach GitHub to check for updates."; exit 4; }
+  formula="$(git -C "$tap" show origin/HEAD:Formula/teamswatcher.rb 2>/dev/null \\
+    || git -C "$tap" show origin/main:Formula/teamswatcher.rb 2>/dev/null || cat "$tap/Formula/teamswatcher.rb")"
+  # url ".../refs/tags/v0.8.0.tar.gz" -> 0.8.0
+  echo "LATEST=$(printf '%s' "$formula" | grep -Eo 'refs/tags/v[0-9][0-9.]*' | head -1 | sed -e 's|refs/tags/v||' -e 's|\\.$||')"
+  echo "CURRENT=$(brew list --versions teamswatcher 2>/dev/null | tr ' ' '\\n' | tail -n +2 | sort -V | tail -1)"
+  case "$(brew info pbarcio/teamswatcher/teamswatcher 2>&1)" in *ntrusted*) echo "UNTRUSTED=1";; esac
 fi
 """
 
@@ -404,7 +415,9 @@ let updateScript = """
   if [ "$TW_MODE" = source ]; then
     git -C "$TW_DIR" pull --ff-only && "$TW_DIR/teamswatcher-setup"
   else
-    brew upgrade teamswatcher; teamswatcher-setup
+    # Pull the tap first: Homebrew only refreshes taps about once a day on its own.
+    git -C "$(brew --repo pbarcio/teamswatcher)" pull --ff-only --quiet || true
+    brew upgrade pbarcio/teamswatcher/teamswatcher && teamswatcher-setup
   fi
 } >> "$TW_LOG" 2>&1
 status=$?
@@ -1107,14 +1120,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 return
             }
             let installedVersion = values["CURRENT"].flatMap { $0.isEmpty ? nil : $0 }
+            let latestVersion = values["LATEST"].flatMap { $0.isEmpty ? nil : $0 }
+            if values["UNTRUSTED"] == "1" {
+                self.showTrustAlert()
+                return
+            }
             let available: String?
             if install.mode == "source" {
                 let behind = Int(values["BEHIND"] ?? "0") ?? 0
                 available = behind > 0 ? "\(behind) new commit\(behind == 1 ? "" : "s") on the remote" : nil
             } else {
-                // e.g. "teamswatcher (0.1.0) < 0.2.0"
-                let outdated = values["OUTDATED"] ?? ""
-                available = outdated.isEmpty ? nil : outdated.replacingOccurrences(of: "teamswatcher ", with: "")
+                guard let latestVersion else {
+                    self.showAlert("Couldn't check for updates", "The latest version couldn't be read from the tap.")
+                    return
+                }
+                let newer = installedVersion.map { latestVersion.compare($0, options: .numeric) == .orderedDescending } ?? true
+                available = newer ? "Version \(latestVersion) is available (installed: \(installedVersion ?? "none"))." : nil
             }
             guard let available else {
                 self.showAlert("TeamsWatcher is up to date", installedVersion.map { "Installed version: \($0)" } ?? "")
@@ -1152,6 +1173,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             log("Update finished with status \(status)")
             self.paused = false
             self.updateUI()
+        }
+    }
+
+    /// Newer Homebrew refuses to use third-party taps until they're trusted, which blocks updates.
+    func showTrustAlert() {
+        let command = "brew trust pbarcio/teamswatcher"
+        log("Update check: Homebrew doesn't trust the pbarcio/teamswatcher tap")
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.messageText = "Homebrew needs to trust the TeamsWatcher tap"
+        alert.informativeText = """
+            Homebrew won't install updates from a tap until you trust it. Run this once in Terminal, \
+            then choose Check for Updates… again:
+
+            \(command)
+            """
+        alert.addButton(withTitle: "Copy Command")
+        alert.addButton(withTitle: "OK")
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(command, forType: .string)
         }
     }
 

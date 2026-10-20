@@ -187,7 +187,7 @@ struct AskView: View {
                     .padding(18)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .onChange(of: model.exchanges.count) { _ in
+                .onChange(of: model.exchanges.count) {
                     withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
             }

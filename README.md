@@ -66,6 +66,8 @@ The menu bar icon shows what's happening: microphone = watching, red microphone 
 ## Install
 
 ```
+brew tap pbarcio/teamswatcher
+brew trust pbarcio/teamswatcher
 brew install pbarcio/teamswatcher/teamswatcher
 teamswatcher-setup
 ```
@@ -86,6 +88,8 @@ To install from a git checkout instead (for example, to try changes), clone the 
 Choose **Check for Updates…** from the menu. If a new release is out, TeamsWatcher offers to install it and restarts if the app itself changed. Updates wait until any call has finished processing.
 
 When the app itself changes, macOS asks for its Microphone and Screen Recording permissions again. If recordings come out silent after an update, see Troubleshooting.
+
+Newer versions of Homebrew won't install anything from a tap until you trust it. If Check for Updates… says so, run `brew trust pbarcio/teamswatcher` once.
 
 From Terminal, the equivalent is `brew update && brew upgrade teamswatcher && teamswatcher-setup`. Run `brew update` first, because Homebrew only checks for new releases about once a day on its own.
 
