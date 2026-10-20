@@ -48,7 +48,7 @@ The title is the meeting's name from the Teams window. Otherwise it comes from t
 
 | Item | What it does |
 |---|---|
-| Start Recording Now / Stop Recording | Record manually. With no meeting app on the mic, this records all sound the Mac plays, plus your mic. |
+| Start Recording Now / Stop Recording | Record manually. With no meeting app on the mic, this records all sound the Mac plays, plus your mic. Stopping during a call keeps what was recorded and doesn't start again until that call ends; Start Recording Now picks it back up, and that recording stops by itself when the call ends. |
 | Bookmark This Moment (⌃⌥B) | Mark the current moment as important. The shortcut works in any app while a call is recorded. |
 | Skip This Call | Stop, and don't record again until the current call ends. |
 | Pause Auto-Start | Stop recording calls automatically until you turn it back on. |

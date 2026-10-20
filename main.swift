@@ -769,7 +769,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         } else if paused {
             lines.append("Auto-start paused")
         } else if skipCurrentCall {
-            lines.append("Skipping this call")
+            lines.append("Paused until this call ends")
         } else {
             lines.append("Watching for calls")
         }
@@ -930,7 +930,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         current = nil
         processing.append(session)
         log("Stop requested: \(reason)")
-        notify("\(session.appName) call ended", "Transcribing and summarizing locally…")
+        if skipCurrentCall {
+            notify("Recording stopped",
+                   "Transcribing what was recorded. Auto-start resumes after this call ends.")
+        } else {
+            notify("\(session.appName) call ended", "Transcribing and summarizing locally…")
+        }
         updateUI()
     }
 
@@ -989,10 +994,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc func manualStart() {
         let inUse = meetingAppUsingMic(audioProcesses())
-        startRecording(app: inUse?.app, automatic: false)
+        // Started during a call (for example after stopping it earlier): it still stops by
+        // itself when the call ends. With no call, it records until you stop it.
+        startRecording(app: inUse?.app, automatic: inUse != nil)
     }
 
-    @objc func manualStop() { stopRecording(reason: "stopped from menu") }
+    /// Stopping by hand during a call means "enough for this call": auto-start waits until
+    /// the meeting app releases the mic. Start Recording Now still works in the meantime.
+    @objc func manualStop() {
+        let duringCall = micActiveSince != nil
+        if duringCall { skipCurrentCall = true }
+        stopRecording(reason: duringCall ? "stopped from menu; not restarting until this call ends" : "stopped from menu")
+    }
 
     @objc func skipCall() {
         skipCurrentCall = true
