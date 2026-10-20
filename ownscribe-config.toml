@@ -24,17 +24,17 @@ them = "Them"
 enabled = false            # not needed: [speakers] already separates you from everyone else
 
 [summarization]
-enabled = true
+enabled = false            # off by default; turn on with "Create Summary" in the TeamsWatcher menu
 backend = "local"          # built-in llama.cpp; never calls an external service
 # Mid-size local model: Llama 3.1 8B Instruct, Q4_K_M (~4.9GB file, ~6GB in use with 16k context).
-# Downloads once on first run or `ownscribe warmup`; inference stays on the Mac.
+# Downloads once, the first time a summary is made; inference stays on the Mac.
 model = "hf:bartowski/Meta-Llama-3.1-8B-Instruct-GGUF/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"
 context_size = 16384
 
 [output]
 dir = "~/ownscribe"
 format = "markdown"
-keep_recording = true
+keep_recording = false     # audio is deleted once transcribed; keep it with "Save Recording" in the menu
 
 [export]
 # One Markdown file per meeting (title, date, speakers, summary, transcript), ready to

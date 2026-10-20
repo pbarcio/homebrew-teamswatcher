@@ -1224,3 +1224,76 @@ class TestForkFeaturesEndToEnd:
             _do_transcribe_and_summarize(config, audio_path, tmp_path, summarize=True)
         assert transcriber.transcribe.call_args[0][0] == audio_path
         assert sorted(p.name for p in tmp_path.iterdir()) == ["recording.wav", "transcript.md"]
+
+
+class TestRuntimeOptions:
+    def test_options_file_overrides_config(self, tmp_path, monkeypatch):
+        from ownscribe.pipeline import _apply_runtime_options
+
+        options = tmp_path / "options.json"
+        options.write_text('{"summarize": true, "keep_recording": true}')
+        monkeypatch.setenv("OWNSCRIBE_OPTIONS_FILE", str(options))
+        config = Config()
+        config.summarization.enabled = False
+        config.output.keep_recording = False
+
+        _apply_runtime_options(config)
+
+        assert config.summarization.enabled is True
+        assert config.output.keep_recording is True
+
+    def test_missing_or_bad_file_changes_nothing(self, tmp_path, monkeypatch):
+        from ownscribe.pipeline import _apply_runtime_options
+
+        config = Config()
+        config.summarization.enabled = False
+        monkeypatch.setenv("OWNSCRIBE_OPTIONS_FILE", str(tmp_path / "missing.json"))
+        _apply_runtime_options(config)
+        (tmp_path / "bad.json").write_text('{"summarize": "yes"')
+        monkeypatch.setenv("OWNSCRIBE_OPTIONS_FILE", str(tmp_path / "bad.json"))
+        _apply_runtime_options(config)
+        (tmp_path / "wrong.json").write_text('{"summarize": "yes", "keep_recording": 1}')
+        monkeypatch.setenv("OWNSCRIBE_OPTIONS_FILE", str(tmp_path / "wrong.json"))
+        _apply_runtime_options(config)
+        assert config.summarization.enabled is False
+        assert config.output.keep_recording is True
+
+    def test_no_env_var(self, monkeypatch):
+        from ownscribe.pipeline import _apply_runtime_options
+
+        monkeypatch.delenv("OWNSCRIBE_OPTIONS_FILE", raising=False)
+        config = Config()
+        _apply_runtime_options(config)
+        assert config.summarization.enabled is True
+
+
+class TestExportWithoutSummary:
+    def test_titled_after_the_app_and_recording_deleted(self, tmp_path, monkeypatch):
+        import json
+
+        from ownscribe.pipeline import _do_transcribe_and_summarize
+
+        out_dir = tmp_path / "2026-10-19_1405"
+        out_dir.mkdir()
+        audio_path = out_dir / "recording.wav"
+        for name in ("recording.wav", "recording.me.wav", "recording.them.wav"):
+            (out_dir / name).write_bytes(b"x")
+        transcriber = mock.MagicMock()
+        transcriber.transcribe.return_value = TranscriptResult(segments=[Segment(text="Hi.", start=0, end=1)])
+
+        config = Config()
+        config.speakers.mode = "none"
+        config.summarization.enabled = False
+        config.output.keep_recording = False
+        config.export.dir = str(tmp_path / "export")
+        monkeypatch.setenv("OWNSCRIBE_SOURCE_APP", "Zoom")
+        monkeypatch.setenv("OWNSCRIBE_RESULT_FILE", str(tmp_path / "result.json"))
+
+        with mock.patch("ownscribe.pipeline._create_transcriber", return_value=transcriber):
+            _do_transcribe_and_summarize(config, audio_path, out_dir, summarize=True)
+
+        paths = json.loads((tmp_path / "result.json").read_text())
+        assert "summary" not in paths
+        assert paths["export"].endswith("2026-10-19 1405 - Zoom call.md")
+        assert "# Zoom call" in (tmp_path / "export" / "2026-10-19 1405 - Zoom call.md").read_text()
+        assert sorted(p.name for p in out_dir.iterdir()) == ["transcript.md"]

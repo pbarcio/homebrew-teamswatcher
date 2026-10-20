@@ -121,6 +121,10 @@ struct Config: Codable {
     var captureAppAudioOnly = true
     /// ownscribe's flag for limiting capture to an app's bundle ID.
     var appFlag = "--app"
+    /// Keep the audio files after transcription (menu: Save Recording).
+    var saveRecording = false
+    /// Create an AI summary with the local model (menu: Create Summary).
+    var createSummary = false
     var notifications = true
     var transcriptsDir = "~/ownscribe"
     var logDir = "~/Library/Logs/TeamsWatcher"
@@ -138,6 +142,8 @@ struct Config: Codable {
         if let v = try c.decodeIfPresent(Double.self, forKey: .pollIntervalSeconds) { pollIntervalSeconds = v }
         if let v = try c.decodeIfPresent(Bool.self, forKey: .captureAppAudioOnly) { captureAppAudioOnly = v }
         if let v = try c.decodeIfPresent(String.self, forKey: .appFlag) { appFlag = v }
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .saveRecording) { saveRecording = v }
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .createSummary) { createSummary = v }
         if let v = try c.decodeIfPresent(Bool.self, forKey: .notifications) { notifications = v }
         if let v = try c.decodeIfPresent(String.self, forKey: .transcriptsDir) { transcriptsDir = v }
         if let v = try c.decodeIfPresent(String.self, forKey: .logDir) { logDir = v }
@@ -158,6 +164,13 @@ func encodeConfig(_ cfg: Config) -> Data? {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     return try? encoder.encode(cfg)
+}
+
+func saveConfig(_ cfg: Config) {
+    guard let data = encodeConfig(cfg) else { return }
+    try? FileManager.default.createDirectory(atPath: (configPath as NSString).deletingLastPathComponent,
+                                             withIntermediateDirectories: true)
+    try? data.write(to: URL(fileURLWithPath: configPath))
 }
 
 func loadConfig() -> Config {
@@ -279,6 +292,100 @@ func notifyViaAppleScript(_ title: String, _ body: String) {
     try? process.run()
 }
 
+// MARK: - Shell commands (updates)
+
+let shellPath = "/opt/homebrew/bin:/usr/local/bin:\(home)/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+/// How TeamsWatcher was installed, as recorded by teamswatcher-setup.
+struct InstallInfo {
+    var mode: String   // "brew" or "source"
+    var dir: String?   // git checkout for "source"
+
+    static func load() -> InstallInfo {
+        let url = URL(fileURLWithPath: expand("~/.config/teamswatcher/install.json"))
+        if let data = try? Data(contentsOf: url),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+           let mode = object["mode"] {
+            return InstallInfo(mode: mode, dir: object["dir"])
+        }
+        return InstallInfo(mode: "brew", dir: nil)
+    }
+}
+
+/// Runs a bash script in the background and reports its exit status and output on the main thread.
+/// Output goes through a temporary file, so long output can never block the script.
+func runShell(_ script: String, env extra: [String: String] = [:],
+              completion: @escaping (Int32, String) -> Void) {
+    let outputURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("teamswatcher-\(UUID().uuidString).log")
+    FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+    guard let output = try? FileHandle(forWritingTo: outputURL) else {
+        completion(-1, "Couldn't create a temporary file")
+        return
+    }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/bash")
+    process.arguments = ["-c", script]
+    var env = ProcessInfo.processInfo.environment
+    env["PATH"] = shellPath
+    env["HOMEBREW_NO_ENV_HINTS"] = "1"
+    env["HOMEBREW_NO_INSTALL_CLEANUP"] = "1"
+    for (key, value) in extra { env[key] = value }
+    process.environment = env
+    process.standardInput = FileHandle.nullDevice
+    process.standardOutput = output
+    process.standardError = output
+    process.terminationHandler = { proc in
+        try? output.close()
+        let text = (try? String(contentsOf: outputURL, encoding: .utf8)) ?? ""
+        try? FileManager.default.removeItem(at: outputURL)
+        let status = proc.terminationStatus
+        DispatchQueue.main.async { completion(status, text) }
+    }
+    do {
+        try process.run()
+    } catch {
+        try? output.close()
+        completion(-1, "\(error)")
+    }
+}
+
+/// Prints CURRENT=..., and OUTDATED=... (Homebrew) or BEHIND=<commits> (git checkout).
+let updateCheckScript = """
+if [ "$TW_MODE" = source ]; then
+  cd "$TW_DIR" || { echo "ERROR=Can't open $TW_DIR"; exit 3; }
+  git fetch --quiet || { echo "ERROR=git fetch failed"; exit 4; }
+  echo "CURRENT=$(git rev-parse --short HEAD)"
+  echo "BEHIND=$(git rev-list --count HEAD..@{u} 2>/dev/null || echo 0)"
+else
+  command -v brew >/dev/null || { echo "ERROR=Homebrew not found"; exit 3; }
+  brew update --quiet >/dev/null 2>&1 || true
+  echo "CURRENT=$(brew list --versions teamswatcher 2>/dev/null | awk '{print $NF}')"
+  echo "OUTDATED=$(brew outdated --verbose teamswatcher 2>/dev/null | head -1)"
+fi
+"""
+
+/// Pulls the latest release and re-runs setup. Runs on its own: setup may quit and
+/// relaunch TeamsWatcher, so the result is reported with a notification.
+let updateScript = """
+{
+  echo "== $(date) updating TeamsWatcher ($TW_MODE)"
+  if [ "$TW_MODE" = source ]; then
+    git -C "$TW_DIR" pull --ff-only && "$TW_DIR/teamswatcher-setup"
+  else
+    brew upgrade teamswatcher; teamswatcher-setup
+  fi
+} >> "$TW_LOG" 2>&1
+status=$?
+if [ $status -eq 0 ]; then
+  osascript -e 'display notification "Update installed. If macOS asks, allow Microphone and Screen Recording again." with title "TeamsWatcher"'
+else
+  osascript -e 'display notification "Update failed. Opening the log." with title "TeamsWatcher"'
+  open "$TW_LOG"
+fi
+exit $status
+"""
+
 // MARK: - Recording session
 
 final class Session {
@@ -286,20 +393,30 @@ final class Session {
     let stdinPipe: Pipe
     let logURL: URL
     let resultURL: URL
+    /// Save Recording / Create Summary choices, re-read by ownscribe when recording stops.
+    let optionsURL: URL
     let started = Date()
     let automatic: Bool
     let appName: String
     let appOnly: Bool
 
-    init(process: Process, stdinPipe: Pipe, logURL: URL, resultURL: URL,
+    init(process: Process, stdinPipe: Pipe, logURL: URL, resultURL: URL, optionsURL: URL,
          automatic: Bool, appName: String, appOnly: Bool) {
         self.process = process
         self.stdinPipe = stdinPipe
         self.logURL = logURL
         self.resultURL = resultURL
+        self.optionsURL = optionsURL
         self.automatic = automatic
         self.appName = appName
         self.appOnly = appOnly
+    }
+
+    func writeOptions(saveRecording: Bool, createSummary: Bool) {
+        let options: [String: Bool] = ["keep_recording": saveRecording, "summarize": createSummary]
+        if let data = try? JSONSerialization.data(withJSONObject: options) {
+            try? data.write(to: optionsURL)
+        }
     }
 
     /// Paths ownscribe reported when it finished (output_dir, transcript, summary, export).
@@ -322,7 +439,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var stopItem: NSMenuItem!
     var skipItem: NSMenuItem!
     var pauseItem: NSMenuItem!
+    var saveRecordingItem: NSMenuItem!
+    var createSummaryItem: NSMenuItem!
     var latestNotesItem: NSMenuItem!
+    var updateItem: NSMenuItem!
+    var checkingForUpdates = false
 
     var current: Session?
     var processing: [Session] = []
@@ -429,6 +550,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         [startItem, stopItem, skipItem, pauseItem].forEach { menu.addItem($0) }
 
         menu.addItem(.separator())
+        saveRecordingItem = item("Save Recording", #selector(toggleSaveRecording))
+        createSummaryItem = item("Create Summary", #selector(toggleCreateSummary))
+        saveRecordingItem.toolTip = "Keep the audio files after transcription."
+        createSummaryItem.toolTip = "Summarize each call with the local model (downloads about 5 GB the first time)."
+        menu.addItem(saveRecordingItem)
+        menu.addItem(createSummaryItem)
+
+        menu.addItem(.separator())
         latestNotesItem = item("Open Latest Notes", #selector(openLatestNotes))
         menu.addItem(latestNotesItem)
         menu.addItem(item("Open Transcripts Folder", #selector(openTranscripts)))
@@ -437,6 +566,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         menu.addItem(item("Edit Config…", #selector(editConfig)))
         menu.addItem(item("Reload Config", #selector(reloadConfig)))
         menu.addItem(.separator())
+        updateItem = item("Check for Updates…", #selector(checkForUpdates))
+        menu.addItem(updateItem)
         menu.addItem(item("Quit TeamsWatcher", #selector(quit)))
 
         statusItem.menu = menu
@@ -453,14 +584,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let symbol: String
         var tint: NSColor? = nil
         if current != nil {
-            symbol = "record.circle.fill"
+            symbol = "mic.fill"
             tint = .systemRed
         } else if !processing.isEmpty {
             symbol = "hourglass"
         } else if paused {
-            symbol = "pause.circle"
+            symbol = "mic.slash"
         } else {
-            symbol = "waveform"
+            symbol = "mic"
         }
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "TeamsWatcher")
         button.contentTintColor = tint
@@ -485,7 +616,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         stopItem.isEnabled = current != nil
         skipItem.isEnabled = current != nil || micActiveSince != nil
         pauseItem.state = paused ? .on : .off
+        saveRecordingItem.state = config.saveRecording ? .on : .off
+        createSummaryItem.state = config.createSummary ? .on : .off
         latestNotesItem.isEnabled = latestNotesPath != nil
+        updateItem.isEnabled = !checkingForUpdates
+        updateItem.title = checkingForUpdates ? "Checking for Updates…" : "Check for Updates…"
     }
 
     // MARK: Watch loop
@@ -550,6 +685,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         var args = config.extraArgs
+        args.append(config.saveRecording ? "--keep-recording" : "--no-keep-recording")
+        args.append(config.createSummary ? "--summarize" : "--no-summarize")
         let appOnly = config.captureAppAudioOnly && !(app?.bundlePrefixes.isEmpty ?? true)
         if appOnly, let app {
             for prefix in app.bundlePrefixes { args += [config.appFlag, prefix] }
@@ -560,6 +697,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let stamp = stampFormatter.string(from: Date())
         let sessionLog = URL(fileURLWithPath: logDirectory).appendingPathComponent("ownscribe-\(stamp).log")
         let resultURL = URL(fileURLWithPath: logDirectory).appendingPathComponent("result-\(stamp).json")
+        let optionsURL = URL(fileURLWithPath: logDirectory).appendingPathComponent("options-\(stamp).json")
 
         // `script` gives ownscribe a pseudo-terminal so its TUI and Ctrl+C handling behave
         // exactly as in Terminal, and records the session output to a log file.
@@ -571,6 +709,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         env["TERM"] = "xterm-256color"
         env["OWNSCRIBE_RESULT_FILE"] = resultURL.path
         env["OWNSCRIBE_SOURCE_APP"] = appName
+        env["OWNSCRIBE_OPTIONS_FILE"] = optionsURL.path
         process.environment = env
         let stdinPipe = Pipe() // held open so `script` never sends EOF to ownscribe
         process.standardInput = stdinPipe
@@ -578,7 +717,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         process.standardError = FileHandle.nullDevice
 
         let session = Session(process: process, stdinPipe: stdinPipe, logURL: sessionLog, resultURL: resultURL,
-                              automatic: automatic, appName: appName, appOnly: appOnly)
+                              optionsURL: optionsURL, automatic: automatic, appName: appName, appOnly: appOnly)
+        session.writeOptions(saveRecording: config.saveRecording, createSummary: config.createSummary)
         process.terminationHandler = { [weak self] proc in
             let status = proc.terminationStatus
             DispatchQueue.main.async { self?.sessionEnded(session, status: status) }
@@ -624,6 +764,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             // ownscribe stopped by itself (silence timeout or error).
             current = nil
             if runtime < 60 {
+                try? FileManager.default.removeItem(at: session.optionsURL)
                 paused = true
                 log("ownscribe exited after \(Int(runtime))s with status \(status); pausing auto-start")
                 notify("ownscribe stopped unexpectedly",
@@ -637,6 +778,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         processing.removeAll { $0 === session }
         let results = session.results()
         try? FileManager.default.removeItem(at: session.resultURL)
+        try? FileManager.default.removeItem(at: session.optionsURL)
         log("ownscribe finished with status \(status); results=\(results); log=\(session.logURL.lastPathComponent)")
 
         let notes = results["export"] ?? results["summary"] ?? results["transcript"] ?? results["output_dir"]
@@ -672,6 +814,104 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         paused.toggle()
         log(paused ? "Auto-start paused" : "Auto-start resumed")
         updateUI()
+    }
+
+    @objc func toggleSaveRecording() {
+        config.saveRecording.toggle()
+        optionsChanged()
+    }
+
+    @objc func toggleCreateSummary() {
+        config.createSummary.toggle()
+        optionsChanged()
+    }
+
+    /// Saves the toggles; a call still being recorded picks them up when it stops.
+    func optionsChanged() {
+        saveConfig(config)
+        current?.writeOptions(saveRecording: config.saveRecording, createSummary: config.createSummary)
+        log("Save Recording \(config.saveRecording ? "on" : "off"), Create Summary \(config.createSummary ? "on" : "off")")
+        updateUI()
+    }
+
+    // MARK: Updates
+
+    @objc func checkForUpdates() {
+        guard !checkingForUpdates else { return }
+        checkingForUpdates = true
+        updateUI()
+        let install = InstallInfo.load()
+        runShell(updateCheckScript, env: ["TW_MODE": install.mode, "TW_DIR": install.dir ?? ""]) { status, output in
+            self.checkingForUpdates = false
+            self.updateUI()
+            var values: [String: String] = [:]
+            for line in output.split(separator: "\n") {
+                if let eq = line.firstIndex(of: "=") {
+                    values[String(line[..<eq])] = String(line[line.index(after: eq)...])
+                        .trimmingCharacters(in: .whitespaces)
+                }
+            }
+            if let error = values["ERROR"] ?? (status != 0 ? output.trimmingCharacters(in: .whitespacesAndNewlines) : nil) {
+                log("Update check failed: \(error)")
+                self.showAlert("Couldn't check for updates", error.isEmpty ? "Unknown error (\(status))." : error)
+                return
+            }
+            let installedVersion = values["CURRENT"].flatMap { $0.isEmpty ? nil : $0 }
+            let available: String?
+            if install.mode == "source" {
+                let behind = Int(values["BEHIND"] ?? "0") ?? 0
+                available = behind > 0 ? "\(behind) new commit\(behind == 1 ? "" : "s") on the remote" : nil
+            } else {
+                // e.g. "teamswatcher (0.1.0) < 0.2.0"
+                let outdated = values["OUTDATED"] ?? ""
+                available = outdated.isEmpty ? nil : outdated.replacingOccurrences(of: "teamswatcher ", with: "")
+            }
+            guard let available else {
+                self.showAlert("TeamsWatcher is up to date", installedVersion.map { "Installed version: \($0)" } ?? "")
+                return
+            }
+            self.offerUpdate(details: available, install: install)
+        }
+    }
+
+    func offerUpdate(details: String, install: InstallInfo) {
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.messageText = "An update is available"
+        alert.informativeText = """
+            \(details)
+
+            Updating takes a minute or two. TeamsWatcher restarts if the app itself changed, \
+            and macOS may then ask for Microphone and Screen Recording permission again.
+            """
+        alert.addButton(withTitle: "Update Now")
+        alert.addButton(withTitle: "Later")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard current == nil, processing.isEmpty else {
+            showAlert("Finish the current call first",
+                      "TeamsWatcher can update once recording and processing are done.")
+            return
+        }
+        let logURL = URL(fileURLWithPath: logDirectory)
+            .appendingPathComponent("update-\(stampFormatter.string(from: Date())).log")
+        log("Updating (\(install.mode)); log=\(logURL.lastPathComponent)")
+        paused = true  // no new recordings while files are being replaced
+        updateUI()
+        runShell(updateScript, env: ["TW_MODE": install.mode, "TW_DIR": install.dir ?? "", "TW_LOG": logURL.path]) { status, _ in
+            // Only reached if setup didn't restart the app (e.g. only ownscribe changed).
+            log("Update finished with status \(status)")
+            self.paused = false
+            self.updateUI()
+        }
+    }
+
+    func showAlert(_ title: String, _ message: String) {
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     @objc func openLatestNotes() {

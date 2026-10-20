@@ -30,6 +30,24 @@ class TestMainCommand:
             config = mock_run.call_args[0][0]
             assert config.summarization.enabled is False
 
+    def test_summarize_flag_overrides_config(self):
+        runner = CliRunner()
+        config = Config()
+        config.summarization.enabled = False
+        with _mock_config(config), mock.patch("ownscribe.pipeline.run_pipeline") as mock_run:
+            result = runner.invoke(cli, ["--summarize"])
+            assert result.exit_code == 0
+            assert mock_run.call_args[0][0].summarization.enabled is True
+
+    def test_summary_setting_kept_without_flag(self):
+        runner = CliRunner()
+        config = Config()
+        config.summarization.enabled = False
+        with _mock_config(config), mock.patch("ownscribe.pipeline.run_pipeline") as mock_run:
+            result = runner.invoke(cli, [])
+            assert result.exit_code == 0
+            assert mock_run.call_args[0][0].summarization.enabled is False
+
     def test_no_mic_flag(self):
         runner = CliRunner()
         with _mock_config(), mock.patch("ownscribe.pipeline.run_pipeline") as mock_run:

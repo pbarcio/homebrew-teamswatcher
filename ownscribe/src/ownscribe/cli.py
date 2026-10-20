@@ -32,7 +32,11 @@ def _dir_size(path: str) -> str:
 
 @click.group(invoke_without_command=True)
 @click.option("--device", default=None, help="Audio input device name or index.")
-@click.option("--no-summarize", is_flag=True, help="Skip LLM summarization.")
+@click.option(
+    "--summarize/--no-summarize",
+    default=None,
+    help="Create (or skip) the LLM summary; overrides [summarization] enabled.",
+)
 @click.option("--diarize", is_flag=True, help="Enable speaker diarization (needs HF token).")
 @click.option("--format", "output_format", type=click.Choice(["markdown", "json"]), default=None, help="Output format.")
 @click.option("--model", default=None, help="Whisper model size (tiny, base, small, medium, large-v3).")
@@ -63,7 +67,7 @@ def _dir_size(path: str) -> str:
 def cli(
     ctx: click.Context,
     device: str | None,
-    no_summarize: bool,
+    summarize: bool | None,
     diarize: bool,
     output_format: str | None,
     model: str | None,
@@ -89,8 +93,8 @@ def cli(
         config.audio.device = device
         if config.audio.backend == "coreaudio" and device:
             config.audio.backend = "sounddevice"
-    if no_summarize:
-        config.summarization.enabled = False
+    if summarize is not None:
+        config.summarization.enabled = summarize
     if diarize:
         config.diarization.enabled = True
     if output_format:

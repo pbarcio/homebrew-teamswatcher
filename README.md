@@ -6,9 +6,16 @@ A menu bar app that starts recording when a meeting app (Microsoft Teams, Zoom, 
 
 - **A transcript labeled you vs. them.** Your mic and the call audio are recorded as separate tracks, so every line is attributed to you (your macOS name) or "Them". No speaker-recognition model or account is needed.
 - **Fast transcription on the GPU.** Whisper large-v3-turbo runs on the Apple Silicon GPU via MLX.
-- **A local summary** with key points, action items and decisions, from Llama 3.1 8B.
-- **One export file**, ready to upload to Glean: `~/ownscribe/Exports/2026-10-19 1405 - <Title>.md`, with title, date, duration, app and speakers in its front matter, followed by the summary and transcript.
+- **A local summary** with key points, action items and decisions, from Llama 3.1 8B. Optional, see below.
+- **One export file**, ready to upload to Glean: `~/ownscribe/Exports/2026-10-19 1405 - <Title>.md`, with title, date, duration, app and speakers in its front matter, followed by the summary (if on) and transcript. Without a summary, the title is the app name, e.g. "Microsoft Teams call".
 - **A clickable "Meeting notes ready" notification** that opens the notes. **Open Latest Notes** in the menu does the same.
+
+**Off by default, one click to turn on** (in the menu, marked with a check when on):
+
+- **Save Recording:** keep the audio files. When it's off, audio is deleted once it's transcribed.
+- **Create Summary:** add the AI summary to the notes, made with the local model. The first summary downloads that model (about 5 GB), so it takes a while longer.
+
+Both settings are remembered. Changing one during a call applies to that call, as long as you change it before the call ends.
 
 ## Install with Homebrew
 
@@ -21,7 +28,7 @@ teamswatcher-setup
 
 - installs the bundled ownscribe fork with MLX support, and builds its audio capture helper
 - writes `~/.config/ownscribe/config.toml`, backing up any existing config
-- downloads the Whisper and summary models (no accounts or tokens needed)
+- downloads the Whisper model (no accounts or tokens needed)
 - installs TeamsWatcher to /Applications (or ~/Applications without admin rights), starts it, and adds it to Login Items
 
 When it finishes, do the one-time permission step it prints: choose **Start Recording Now** from the menu bar icon, allow the Microphone and Screen & System Audio Recording prompts, stop the recording, then quit and reopen TeamsWatcher.
@@ -57,7 +64,7 @@ The repo is its own Homebrew tap, so it **must** be named `homebrew-teamswatcher
    git push -u origin main
    ```
 2. Publish a release: `./release.sh 0.1.0`. This tags the commit, fills in the formula's URL and checksum, and pushes. Coworkers can install right after.
-3. For later changes, commit and then run `./release.sh 0.1.1` (and so on). Coworkers update with `brew upgrade teamswatcher && teamswatcher-setup`.
+3. For later changes, commit and then run `./release.sh 0.1.1` (and so on). Coworkers get it from **Check for Updates…** in the menu, or with `brew upgrade teamswatcher && teamswatcher-setup`.
 
 Replace `OWNER` in this README with your GitHub username. `release.sh` fixes it in the formula automatically.
 
@@ -68,8 +75,12 @@ Speaker labels (diarization) are turned off. Without real names they'd only read
 - Every 2 seconds TeamsWatcher asks Core Audio which processes have the mic open.
 - If an enabled meeting app holds the mic for **10 seconds**, it launches `ownscribe --app <that app's bundle ID>`. That records the app's audio plus your mic, each on its own track. The delay keeps device tests and pre-join screens from triggering it.
 - When the app releases the mic for **30 seconds**, TeamsWatcher sends Ctrl+C. ownscribe then transcribes each track, labels and merges them, summarizes, and writes the export.
-- The menu bar icon shows the current state: waveform = watching, red dot = recording, hourglass = processing.
-- The menu also has **Skip This Call**, **Pause Auto-Start**, manual Start/Stop, and **Open Latest Notes**.
+- The menu bar icon shows the current state: microphone = watching, red microphone = recording, hourglass = processing, crossed-out microphone = paused.
+- The menu also has **Skip This Call**, **Pause Auto-Start**, manual Start/Stop, **Open Latest Notes**, and **Check for Updates…**.
+
+## Updating
+
+Choose **Check for Updates…** from the menu. If a new release is out, TeamsWatcher offers to install it. It runs `brew upgrade teamswatcher` and `teamswatcher-setup` for you (or `git pull` and setup, if you installed from a git checkout), then restarts if the app itself changed. The log of each update is saved in `~/Library/Logs/TeamsWatcher/`. Updates wait until any call in progress has finished processing.
 
 **Use a headset when you can.** On laptop speakers, your mic also picks up the other side. TeamsWatcher drops mic lines that duplicate what was said on the call at the same moment, but a headset gives the cleanest "you" track.
 
@@ -112,6 +123,8 @@ TeamsWatcher settings:
 | `stopGraceSeconds` | 30 | How long the mic must be released before recording stops |
 | `captureAppAudioOnly` | true | Record only the meeting app's audio; `false` = all system audio |
 | `extraArgs` | `[]` | Extra ownscribe flags, e.g. `["--template", "meeting"]` |
+| `saveRecording` | false | Same as **Save Recording** in the menu |
+| `createSummary` | false | Same as **Create Summary** in the menu |
 | `notifications` | true | Start, stop and notes-ready notifications |
 
 Logs are in `~/Library/Logs/TeamsWatcher/`: `teamswatcher.log` for the watcher, plus one `ownscribe-*.log` per recording.

@@ -263,21 +263,44 @@ def _write_export(config: Config, out_dir: Path, result, summary: str | None, ti
     export_dir = resolve_export_dir(config.export.dir)
     if export_dir is None:
         return None
+    source = os.environ.get("OWNSCRIBE_SOURCE_APP", "").strip()
     try:
         started = started_at(out_dir)
-        title = title or "Meeting"
+        # Without a summary there is no generated title; name it after the app instead.
+        title = title or (f"{source} call" if source else "Meeting")
         content = format_export(
             title=title,
             started=started,
             result=result,
             summary=summary,
-            source=os.environ.get("OWNSCRIBE_SOURCE_APP", ""),
+            source=source,
             include_transcript=config.export.include_transcript,
         )
         return write_export(export_dir, export_filename(started, title), content)
     except OSError as exc:
         click.echo(f"Warning: could not write the export to {export_dir}: {exc}", err=True)
         return None
+
+
+def _apply_runtime_options(config: Config) -> None:
+    """Apply choices a launcher may change while recording (OWNSCRIBE_OPTIONS_FILE).
+
+    The file is JSON with optional booleans "summarize" and "keep_recording". It is read
+    once recording stops, so e.g. TeamsWatcher's menu toggles count for the call in progress.
+    """
+    target = os.environ.get("OWNSCRIBE_OPTIONS_FILE")
+    if not target:
+        return
+    try:
+        data = json.loads(Path(target).expanduser().read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(data, dict):
+        return
+    if isinstance(data.get("summarize"), bool):
+        config.summarization.enabled = data["summarize"]
+    if isinstance(data.get("keep_recording"), bool):
+        config.output.keep_recording = data["keep_recording"]
 
 
 def _write_result_file(**paths: Path | None) -> None:
@@ -377,6 +400,7 @@ def run_pipeline(config: Config) -> None:
         signal.signal(signal.SIGINT, original_handler)
 
     recorder.stop()
+    _apply_runtime_options(config)
     if getattr(recorder, "silence_timed_out", False):
         click.echo("\n\nRecording auto-stopped after silence timeout.")
     else:
