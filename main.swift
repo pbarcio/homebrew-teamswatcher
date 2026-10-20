@@ -5,6 +5,7 @@
 // Requires macOS 14.2+ (Core Audio process objects). Build with ./build.sh.
 
 import AppKit
+import Carbon.HIToolbox
 import CoreAudio
 import Darwin
 import SwiftUI
@@ -128,6 +129,10 @@ struct Config: Codable {
     /// Create an AI summary with the local model (menu: Create Summary).
     var createSummary = false
     var notifications = true
+    /// Name recordings after the meeting app's window title (e.g. the Teams meeting name).
+    var useWindowTitles = true
+    /// ⌃⌥B marks the current moment of a recording as important.
+    var bookmarkShortcut = true
     var transcriptsDir = "~/ownscribe"
     var logDir = "~/Library/Logs/TeamsWatcher"
 
@@ -147,6 +152,8 @@ struct Config: Codable {
         if let v = try c.decodeIfPresent(Bool.self, forKey: .saveRecording) { saveRecording = v }
         if let v = try c.decodeIfPresent(Bool.self, forKey: .createSummary) { createSummary = v }
         if let v = try c.decodeIfPresent(Bool.self, forKey: .notifications) { notifications = v }
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .useWindowTitles) { useWindowTitles = v }
+        if let v = try c.decodeIfPresent(Bool.self, forKey: .bookmarkShortcut) { bookmarkShortcut = v }
         if let v = try c.decodeIfPresent(String.self, forKey: .transcriptsDir) { transcriptsDir = v }
         if let v = try c.decodeIfPresent(String.self, forKey: .logDir) { logDir = v }
         // Settings from the Teams-only version.
@@ -410,6 +417,88 @@ fi
 exit $status
 """
 
+// MARK: - Meeting titles from window titles
+
+/// Titles of the visible, normal windows of running apps whose bundle ID starts with one
+/// of *bundlePrefixes*. Reading other apps' window titles needs the Screen & System Audio
+/// Recording permission, which TeamsWatcher already has for capturing call audio.
+func windowTitles(bundlePrefixes: [String]) -> [String] {
+    let pids = Set(NSWorkspace.shared.runningApplications.compactMap { app -> pid_t? in
+        guard let id = app.bundleIdentifier, bundlePrefixes.contains(where: { id.hasPrefix($0) }) else { return nil }
+        return app.processIdentifier
+    })
+    guard !pids.isEmpty,
+          let windows = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] else { return [] }
+    return windows.compactMap { window in
+        guard let pid = window[kCGWindowOwnerPID as String] as? pid_t, pids.contains(pid),
+              (window[kCGWindowLayer as String] as? Int) == 0,
+              let name = window[kCGWindowName as String] as? String,
+              !name.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        return name
+    }
+}
+
+/// Words in window titles that name the app or a part of it, never a meeting.
+let genericTitleParts: Set<String> = [
+    "microsoft teams", "microsoft teams (work or school)", "microsoft teams classic", "teams",
+    "zoom", "zoom meeting", "zoom workplace", "zoom.us", "webex", "cisco webex meetings", "webex meetings",
+    "meeting", "meeting compact view", "call", "calling", "sharing control bar", "screen sharing",
+    "notification", "microsoft teams notification", "slack", "huddle", "lobby", "pre-join",
+]
+
+/// Sections of the Teams main window ("Chat | Alex | Microsoft Teams" is not a meeting).
+let teamsSections: Set<String> = [
+    "chat", "activity", "calendar", "calls", "files", "apps", "onedrive", "copilot", "assignments",
+    "approvals", "planner", "notifications", "communities", "search", "settings", "people", "help",
+    "home", "teams and channels", "viva engage", "shifts", "tasks", "loop", "store",
+]
+
+/// The meeting's name from one window title, or nil if the window isn't a meeting.
+func meetingTitle(fromWindowTitle raw: String, appName: String) -> String? {
+    let parts = raw.components(separatedBy: " | ")
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    guard let first = parts.first else { return nil }
+    if teamsSections.contains(first.lowercased()) { return nil }
+    let generic = genericTitleParts.union([appName.lowercased()])
+    guard let title = parts.first(where: { !generic.contains($0.lowercased()) }) else { return nil }
+    if title.lowercased().contains("notification") || title.count < 2 { return nil }
+    return String(title.prefix(80))
+}
+
+// MARK: - Global shortcut (Carbon hot key: works in any app, needs no extra permission)
+
+final class HotKey {
+    private var hotKeyRef: EventHotKeyRef?
+    private var handlerRef: EventHandlerRef?
+    let action: () -> Void
+
+    init?(keyCode: Int, modifiers: Int, action: @escaping () -> Void) {
+        self.action = action
+        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        let installed = InstallEventHandler(GetApplicationEventTarget(), { _, _, userData in
+            guard let userData else { return noErr }
+            let hotKey = Unmanaged<HotKey>.fromOpaque(userData).takeUnretainedValue()
+            DispatchQueue.main.async { hotKey.action() }
+            return noErr
+        }, 1, &spec, context, &handlerRef)
+        guard installed == noErr else { return nil }
+        let id = EventHotKeyID(signature: OSType(0x5457_424B), id: 1) // "TWBK"
+        let registered = RegisterEventHotKey(UInt32(keyCode), UInt32(modifiers), id,
+                                             GetApplicationEventTarget(), 0, &hotKeyRef)
+        guard registered == noErr else { return nil } // deinit removes the handler
+    }
+
+    deinit {
+        if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
+        if let handlerRef { RemoveEventHandler(handlerRef) }
+    }
+}
+
+let bookmarkShortcutLabel = "⌃⌥B"
+
 // MARK: - Recording session
 
 final class Session {
@@ -423,6 +512,16 @@ final class Session {
     let automatic: Bool
     let appName: String
     let appOnly: Bool
+    /// Bundle ID prefixes of the meeting app, for reading its window titles.
+    var appBundlePrefixes: [String] = []
+    /// How often each candidate meeting title was seen; the most frequent one wins.
+    var titleVotes: [String: Int] = [:]
+    var lastTitleSample = Date.distantPast
+    var bookmarks: [Date] = []
+
+    var meetingTitle: String? {
+        titleVotes.max { a, b in a.value == b.value ? a.key.count < b.key.count : a.value < b.value }?.key
+    }
 
     init(process: Process, stdinPipe: Pipe, logURL: URL, resultURL: URL, optionsURL: URL,
          automatic: Bool, appName: String, appOnly: Bool) {
@@ -437,7 +536,9 @@ final class Session {
     }
 
     func writeOptions(saveRecording: Bool, createSummary: Bool) {
-        let options: [String: Bool] = ["keep_recording": saveRecording, "summarize": createSummary]
+        var options: [String: Any] = ["keep_recording": saveRecording, "summarize": createSummary]
+        if let title = meetingTitle { options["title"] = title }
+        if !bookmarks.isEmpty { options["bookmarks"] = bookmarks.map { $0.timeIntervalSince1970 } }
         if let data = try? JSONSerialization.data(withJSONObject: options) {
             try? data.write(to: optionsURL)
         }
@@ -468,6 +569,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var latestNotesItem: NSMenuItem!
     var updateItem: NSMenuItem!
     var tidyItem: NSMenuItem!
+    var bookmarkItem: NSMenuItem!
+    var hotKey: HotKey?
+    /// The menu bar icon shows a bookmark until then, confirming a bookmark.
+    var bookmarkFlashUntil = Date.distantPast
+    var askWindow: NSWindow?
+    var askModel: AskModel?
     var settingsWindow: NSWindow?
     var settingsModel: SettingsModel?
     var checkingForUpdates = false
@@ -486,6 +593,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         applyConfig(loadConfig())
         buildMenu()
+        registerHotKey()
         setUpNotifications()
         log("TeamsWatcher started. Config: \(configPath)")
         let watched = config.meetingApps.filter { $0.enabled }.map { $0.name }
@@ -577,7 +685,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         stopItem = item("Stop Recording", #selector(manualStop))
         skipItem = item("Skip This Call", #selector(skipCall))
         pauseItem = item("Pause Auto-Start", #selector(togglePause))
-        [startItem, stopItem, skipItem, pauseItem].forEach { menu.addItem($0) }
+        bookmarkItem = item("Bookmark This Moment", #selector(bookmarkMoment))
+        bookmarkItem.keyEquivalent = "b"
+        bookmarkItem.keyEquivalentModifierMask = [.control, .option]
+        bookmarkItem.toolTip = "Mark this moment of the call as important (\(bookmarkShortcutLabel) works in any app)."
+        [startItem, stopItem, bookmarkItem, skipItem, pauseItem].forEach { menu.addItem($0) }
 
         menu.addItem(.separator())
         saveRecordingItem = item("Save Recording", #selector(toggleSaveRecording))
@@ -588,6 +700,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         menu.addItem(createSummaryItem)
 
         menu.addItem(.separator())
+        let askItem = item("Ask My Meetings…", #selector(openAsk))
+        askItem.toolTip = "Ask questions across your transcripts, answered by the local model."
+        menu.addItem(askItem)
         latestNotesItem = item("Open Latest Notes", #selector(openLatestNotes))
         menu.addItem(latestNotesItem)
         menu.addItem(item("Open Transcripts Folder", #selector(openTranscripts)))
@@ -617,7 +732,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard let button = statusItem?.button else { return }
         let symbol: String
         var tint: NSColor? = nil
-        if current != nil {
+        if current != nil, bookmarkFlashUntil > Date() {
+            symbol = "bookmark.fill"
+            tint = .systemOrange
+        } else if current != nil {
             symbol = "mic.fill"
             tint = .systemRed
         } else if !processing.isEmpty {
@@ -634,6 +752,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if let s = current {
             let source = s.appOnly ? "\(s.appName) audio" : "all system audio"
             lines.append("Recording since \(clockFormatter.string(from: s.started)) (\(source) + mic)")
+            if let title = s.meetingTitle { lines.append(title) }
         } else if paused {
             lines.append("Auto-start paused")
         } else if skipCurrentCall {
@@ -648,6 +767,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         startItem.isEnabled = current == nil
         stopItem.isEnabled = current != nil
+        bookmarkItem.isEnabled = current != nil
+        let marks = current?.bookmarks.count ?? 0
+        bookmarkItem.title = marks > 0 ? "Bookmark This Moment (\(marks) so far)" : "Bookmark This Moment"
         skipItem.isEnabled = current != nil || micActiveSince != nil
         pauseItem.state = paused ? .on : .off
         saveRecordingItem.state = config.saveRecording ? .on : .off
@@ -694,6 +816,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }()
 
         if let session = current {
+            if config.useWindowTitles, now.timeIntervalSince(session.lastTitleSample) >= 15 {
+                sampleMeetingTitle(session)
+            }
             if session.automatic && releasedLongEnough {
                 stopRecording(reason: "\(session.appName) released the mic for \(Int(config.stopGraceSeconds))s")
             }
@@ -753,6 +878,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         let session = Session(process: process, stdinPipe: stdinPipe, logURL: sessionLog, resultURL: resultURL,
                               optionsURL: optionsURL, automatic: automatic, appName: appName, appOnly: appOnly)
+        session.appBundlePrefixes = app?.bundlePrefixes ?? []
         session.writeOptions(saveRecording: config.saveRecording, createSummary: config.createSummary)
         process.terminationHandler = { [weak self] proc in
             let status = proc.terminationStatus
@@ -768,6 +894,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         current = session
+        sampleMeetingTitle(session)
         log("Started ownscribe (\(automatic ? "auto" : "manual"), \(appName)) args=\(args) log=\(sessionLog.lastPathComponent)")
         notify("Recording \(appName) call",
                appOnly ? "Capturing \(appName) audio + your mic." : "Capturing all system audio + your mic.")
@@ -776,6 +903,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func stopRecording(reason: String) {
         guard let session = current else { return }
+        // Last look at the meeting window; ownscribe reads the options once recording stops.
+        sampleMeetingTitle(session)
+        writeOptions(session)
         let scriptPID = session.process.processIdentifier
         // ownscribe runs as the session leader of the pty, so signalling its process
         // group is the same as pressing Ctrl+C in Terminal.
@@ -877,9 +1007,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// Saves the toggles; a call still being recorded picks them up when it stops.
     func optionsChanged() {
         saveConfig(config)
-        current?.writeOptions(saveRecording: config.saveRecording, createSummary: config.createSummary)
+        if let current { writeOptions(current) }
         log("Save Recording \(config.saveRecording ? "on" : "off"), Create Summary \(config.createSummary ? "on" : "off")")
         updateUI()
+    }
+
+    func writeOptions(_ session: Session) {
+        session.writeOptions(saveRecording: config.saveRecording, createSummary: config.createSummary)
+    }
+
+    // MARK: Meeting title and bookmarks
+
+    /// Reads the meeting app's window titles and counts the meeting names found.
+    func sampleMeetingTitle(_ session: Session) {
+        session.lastTitleSample = Date()
+        guard config.useWindowTitles, !session.appBundlePrefixes.isEmpty else { return }
+        let titles = windowTitles(bundlePrefixes: session.appBundlePrefixes)
+        let candidates = Set(titles.compactMap { meetingTitle(fromWindowTitle: $0, appName: session.appName) })
+        let before = session.meetingTitle
+        for candidate in candidates { session.titleVotes[candidate, default: 0] += 1 }
+        if session.meetingTitle != before {
+            log("Meeting title: \(session.meetingTitle ?? "-") (\(session.appName) windows: \(titles))")
+            writeOptions(session)
+            updateUI()
+        }
+    }
+
+    func registerHotKey() {
+        hotKey = nil
+        guard config.bookmarkShortcut else { return }
+        hotKey = HotKey(keyCode: kVK_ANSI_B, modifiers: controlKey | optionKey) { [weak self] in
+            self?.bookmarkMoment()
+        }
+        if hotKey == nil { log("Couldn't register the \(bookmarkShortcutLabel) bookmark shortcut (another app may use it)") }
+    }
+
+    @objc func bookmarkMoment() {
+        guard let session = current else {
+            NSSound.beep()
+            return
+        }
+        let now = Date()
+        if let last = session.bookmarks.last, now.timeIntervalSince(last) < 3 { return } // double press
+        session.bookmarks.append(now)
+        writeOptions(session)
+        let offset = Int(now.timeIntervalSince(session.started))
+        log("Bookmark \(session.bookmarks.count) at \(offset / 60):\(String(format: "%02d", offset % 60))")
+        NSSound(named: "Tink")?.play()
+        bookmarkFlashUntil = now.addingTimeInterval(1.5)
+        updateUI()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { [weak self] in self?.updateUI() }
+    }
+
+    // MARK: Ask my meetings
+
+    @objc func openAsk() {
+        if let window = askWindow, window.isVisible {
+            NSApp.activate()
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+        let model = askModel ?? AskModel()
+        model.ownscribePath = expand(config.ownscribePath)
+        askModel = model
+        let window = askWindow ?? {
+            let w = NSWindow(contentViewController: NSHostingController(rootView: AskView(model: model)))
+            w.title = "Ask My Meetings"
+            w.styleMask = [.titled, .closable, .resizable, .miniaturizable]
+            w.isReleasedWhenClosed = false
+            w.setContentSize(NSSize(width: 620, height: 640))
+            w.center()
+            return w
+        }()
+        askWindow = window
+        NSApp.activate()
+        window.makeKeyAndOrderFront(nil)
     }
 
     // MARK: Updates
@@ -1023,6 +1225,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let appLabel = app.map { "\($0.name)\($0.enabled ? "" : " (disabled)")" } ?? "-"
             lines.append("  pid=\(p.pid) in=\(p.runningInput) out=\(p.runningOutput) app=\(appLabel) bundle=\(p.bundleID) path=\(p.path)")
         }
+        lines.append("Meeting app windows:")
+        for app in config.meetingApps where app.enabled {
+            for title in windowTitles(bundlePrefixes: app.bundlePrefixes) {
+                let parsed = meetingTitle(fromWindowTitle: title, appName: app.name) ?? "(not a meeting)"
+                lines.append("  \(app.name): \"\(title)\" -> \(parsed)")
+            }
+        }
         log(lines.joined(separator: "\n"))
         NSWorkspace.shared.open(logFileURL)
     }
@@ -1099,6 +1308,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         config.createSummary = model.createSummary
         config.notifications = model.notifications
         config.captureAppAudioOnly = model.captureAppAudioOnly
+        config.useWindowTitles = model.useWindowTitles
+        config.bookmarkShortcut = model.bookmarkShortcut
         config.startDebounceSeconds = model.startDebounceSeconds
         config.stopGraceSeconds = model.stopGraceSeconds
         config.meetingApps = model.meetingApps.map { $0.app }
@@ -1107,7 +1318,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         saveConfig(config)
         applyConfig(config)
-        current?.writeOptions(saveRecording: config.saveRecording, createSummary: config.createSummary)
+        registerHotKey()
+        if let current { writeOptions(current) }
         log("Settings saved. Watching: \(config.meetingApps.filter { $0.enabled }.map { $0.name }.joined(separator: ", "))")
         updateUI()
 
@@ -1141,6 +1353,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc func reloadConfig() {
         applyConfig(loadConfig())
+        registerHotKey()
         log("Config reloaded. Watching: \(config.meetingApps.filter { $0.enabled }.map { $0.name }.joined(separator: ", "))")
         updateUI()
     }

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from datetime import date
 
 import click
 
@@ -132,15 +133,35 @@ def cli(
 
 @cli.command()
 @click.argument("question")
-@click.option("--since", default=None, help="Only search meetings after this date (YYYY-MM-DD).")
-@click.option("--limit", default=None, type=int, help="Max number of recent meetings to search.")
+@click.option("--since", default=None, help="Only search meetings on or after this date (YYYY-MM-DD).")
+@click.option("--until", default=None, help="Only search meetings on or before this date (YYYY-MM-DD).")
+@click.option("--limit", default=None, type=int, help="Max number of recent meetings to search (--classic only).")
+@click.option("--json", "as_json", is_flag=True, help="Print JSON lines (status, token, answer, sources) for apps.")
+@click.option("--classic", is_flag=True, help="Upstream search: needs summaries, reads whole transcripts.")
 @click.pass_context
-def ask(ctx: click.Context, question: str, since: str | None, limit: int | None) -> None:
-    """Ask a question across your meeting notes."""
-    config = ctx.obj["config"]
-    from ownscribe.search import ask as run_ask
+def ask(
+    ctx: click.Context, question: str, since: str | None, until: str | None, limit: int | None,
+    as_json: bool, classic: bool,
+) -> None:
+    """Ask a question across your meetings, answered by the local model with sources.
 
-    run_ask(config, question, since=since, limit=limit)
+    Questions can name a time: "yesterday", "last week", "on Monday", "past 10 days".
+    """
+    config = ctx.obj["config"]
+    if classic:
+        from ownscribe.search import ask as run_classic
+
+        run_classic(config, question, since=since, limit=limit)
+        return
+    from ownscribe.meeting_qa import ask as run_ask
+
+    for value, name in ((since, "--since"), (until, "--until")):
+        if value:
+            try:
+                date.fromisoformat(value)
+            except ValueError:
+                raise click.BadParameter("use YYYY-MM-DD", param_hint=name) from None
+    ctx.exit(run_ask(config, question, since=since, until=until, as_json=as_json))
 
 
 @cli.command()

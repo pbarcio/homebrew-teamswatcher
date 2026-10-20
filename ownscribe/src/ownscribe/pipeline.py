@@ -12,6 +12,7 @@ import sys
 import termios
 import time
 import tty
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -305,7 +306,9 @@ def _finalize_folder(config: Config, out_dir: Path, audio_path: Path, title: str
     return out_dir, audio_dir / audio_path.name
 
 
-def _write_notes(config: Config, out_dir: Path, result, summary: str | None, title: str) -> Path | None:
+def _write_notes(
+    config: Config, out_dir: Path, result, summary: str | None, title: str, bookmarks: list[float] | None = None,
+) -> Path | None:
     """Save the one-file notes ("<folder name>.md") in the recording's folder, plus an
     optional copy elsewhere. Never fails the run; returns the notes path."""
     from ownscribe.output.export import format_export, resolve_export_dir, started_at, write_export
@@ -320,6 +323,7 @@ def _write_notes(config: Config, out_dir: Path, result, summary: str | None, tit
         summary=summary,
         source=source,
         include_transcript=config.export.include_transcript,
+        bookmarks=bookmarks,
     )
     filename = f"{out_dir.name}.md"
     notes_path = out_dir / filename
@@ -339,25 +343,42 @@ def _write_notes(config: Config, out_dir: Path, result, summary: str | None, tit
     return notes_path
 
 
-def _apply_runtime_options(config: Config) -> None:
+@dataclass
+class RuntimeExtras:
+    """What a launcher learned about the call while it was being recorded."""
+
+    title: str = ""  # the meeting's name, e.g. from the meeting app's window
+    bookmarks: list[float] = field(default_factory=list)  # Unix times the user marked
+
+
+def _apply_runtime_options(config: Config) -> RuntimeExtras:
     """Apply choices a launcher may change while recording (OWNSCRIBE_OPTIONS_FILE).
 
-    The file is JSON with optional booleans "summarize" and "keep_recording". It is read
-    once recording stops, so e.g. TeamsWatcher's menu toggles count for the call in progress.
+    The file is JSON with optional booleans "summarize" and "keep_recording", plus an
+    optional "title" (string) and "bookmarks" (Unix timestamps). It is read once
+    recording stops, so e.g. TeamsWatcher's menu toggles count for the call in progress.
     """
+    extras = RuntimeExtras()
     target = os.environ.get("OWNSCRIBE_OPTIONS_FILE")
     if not target:
-        return
+        return extras
     try:
         data = json.loads(Path(target).expanduser().read_text())
     except (OSError, ValueError):
-        return
+        return extras
     if not isinstance(data, dict):
-        return
+        return extras
     if isinstance(data.get("summarize"), bool):
         config.summarization.enabled = data["summarize"]
     if isinstance(data.get("keep_recording"), bool):
         config.output.keep_recording = data["keep_recording"]
+    if isinstance(data.get("title"), str):
+        extras.title = data["title"].strip()
+    if isinstance(data.get("bookmarks"), list):
+        extras.bookmarks = [
+            float(v) for v in data["bookmarks"] if isinstance(v, int | float) and not isinstance(v, bool)
+        ]
+    return extras
 
 
 def _system_audio_was_silent(audio_path: Path) -> bool:
@@ -479,7 +500,8 @@ def run_pipeline(config: Config) -> None:
         signal.signal(signal.SIGINT, original_handler)
 
     recorder.stop()
-    _apply_runtime_options(config)
+    extras = _apply_runtime_options(config)
+    bookmarks = [stamp - start_time for stamp in extras.bookmarks]
     if getattr(recorder, "silence_timed_out", False):
         click.echo("\n\nRecording auto-stopped after silence timeout.")
     else:
@@ -505,7 +527,7 @@ def run_pipeline(config: Config) -> None:
         _check_audio_silence(audio_path)
 
     # 2. Transcribe
-    _do_transcribe_and_summarize(config, audio_path, out_dir)
+    _do_transcribe_and_summarize(config, audio_path, out_dir, meeting_title=extras.title, bookmarks=bookmarks)
 
 
 def run_transcribe(config: Config, audio_file: str) -> None:
@@ -686,8 +708,14 @@ def _do_transcribe_and_summarize(
     audio_path: Path,
     out_dir: Path,
     summarize: bool = True,
+    meeting_title: str = "",
+    bookmarks: list[float] | None = None,
 ) -> None:
-    """Shared logic for transcribe + optional summarize."""
+    """Shared logic for transcribe + optional summarize.
+
+    *meeting_title* (e.g. from the meeting app's window) names the folder and notes in
+    place of a generated title. *bookmarks* are offsets in seconds into the recording.
+    """
     diar_enabled = (
         config.transcription.backend != "mlx"
         and config.diarization.enabled
@@ -723,6 +751,10 @@ def _do_transcribe_and_summarize(
 
         # Save transcript — silent, no echo
         transcript_str, _ = _format_output(config, result)
+        if bookmarks and config.output.format != "json":
+            from ownscribe.output.markdown import format_transcript
+
+            transcript_str = format_transcript(result, bookmarks)
         ext = "json" if config.output.format == "json" else "md"
         transcript_path = out_dir / f"transcript.{ext}"
         transcript_path.write_text(transcript_str)
@@ -750,11 +782,18 @@ def _do_transcribe_and_summarize(
                                 "downloading_model",
                             )
                             progress.complete("downloading_model")
-                        summary = summarizer.summarize(result.speaker_text)
+                        if bookmarks:
+                            from ownscribe.output.bookmarks import annotated_speaker_text
+
+                            summary_input = annotated_speaker_text(result, bookmarks, config.speakers.me_label)
+                        else:
+                            summary_input = result.speaker_text
+                        summary = summarizer.summarize(summary_input)
                         _, summary_str = _format_output(config, result, summary)
                         summary_path = out_dir / f"summary.{ext}"
                         summary_path.write_text(summary_str or summary)
-                        title = _generate_title(summary, summarizer)
+                        if not meeting_title:
+                            title = _generate_title(summary, summarizer)
                         progress.complete("summarizing")
                     except Exception:
                         progress.fail("summarizing")
@@ -808,10 +847,10 @@ def _do_transcribe_and_summarize(
     # One folder per recording: "YYYY-MM-DD HHMM - Title", with the notes inside.
     notes_path = None
     if summarize:
-        title = title or _default_title()
+        title = meeting_title or title or _default_title()
         out_dir, audio_path = _finalize_folder(config, out_dir, audio_path, title)
         if not no_speech:
-            notes_path = _write_notes(config, out_dir, result, summary, title)
+            notes_path = _write_notes(config, out_dir, result, summary, title, bookmarks)
         click.echo(f"Saved to {out_dir}")
 
     transcript_path = out_dir / transcript_path.name

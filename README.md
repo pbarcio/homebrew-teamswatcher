@@ -12,6 +12,9 @@ Requires an Apple Silicon Mac with macOS 14.2 or later.
 - **Fast, local transcription.** Whisper large-v3-turbo runs on the Mac's GPU.
 - **Mixed-language calls, if you need them.** Transcription is English by default. Turn on Spanish (or other languages) and people can switch languages at any point; each stretch of speech is transcribed in the language it was spoken in.
 - **A notes file ready to upload to Glean.** It holds the title, date, duration, app and speakers, then the summary (if on) and the transcript.
+- **The real meeting name.** Teams names its meeting window after the meeting, and TeamsWatcher uses that for the folder and notes, so you get "Weekly cutover sync" instead of "Microsoft Teams call". No calendar access is needed.
+- **Bookmarks.** Press **⌃⌥B** (Control-Option-B) in any app during a call to mark something important. You hear a short sound and the menu bar icon briefly turns into a bookmark. Bookmarks show up as ★ lines in the transcript and in a **Bookmarks** list at the top of the notes, and the summary (if on) makes sure to cover them.
+- **Ask My Meetings.** Ask questions across all your transcripts, like "what did we decide about the go-live date?" or "what was I asked to do last week?". The local model answers and lists the meetings it used; click one to open its notes.
 - **A notification when it's done.** Clicking it opens Finder at that recording's folder, with the notes selected.
 
 Two options are **off by default** and can be turned on from the menu (a checkmark shows when they're on):
@@ -37,7 +40,7 @@ Each recording gets one folder in `~/ownscribe`, named with the date, time and t
     ...
 ```
 
-The title comes from the summary. Without a summary, it's the app's name, such as "Microsoft Teams call". While a call is still being recorded, the folder is just the date and time, and it gets its title when processing finishes.
+The title is the meeting's name from the Teams window. Otherwise it comes from the summary, and without a summary, it's the app's name, such as "Microsoft Teams call". While a call is still being recorded, the folder is just the date and time, and it gets its title when processing finishes.
 
 **Cleaning up older recordings:** versions before 0.4 used folder names like `2026-10-19_1405_spec-handoff` and kept notes in a separate `Exports` folder. Choose **Tidy Transcripts Folder…** from the menu to convert them. It shows what will change before doing anything: it renames old folders, moves each notes file from `Exports` into its recording's folder, and removes empty folders left by failed recordings. It only deletes empty folders and never touches a recording made in the last 10 minutes. From Terminal, the same thing is `ownscribe tidy` to preview and `ownscribe tidy --apply` to make the changes.
 
@@ -46,9 +49,11 @@ The title comes from the summary. Without a summary, it's the app's name, such a
 | Item | What it does |
 |---|---|
 | Start Recording Now / Stop Recording | Record manually. With no meeting app on the mic, this records all sound the Mac plays, plus your mic. |
+| Bookmark This Moment (⌃⌥B) | Mark the current moment as important. The shortcut works in any app while a call is recorded. |
 | Skip This Call | Stop, and don't record again until the current call ends. |
 | Pause Auto-Start | Stop recording calls automatically until you turn it back on. |
 | Save Recording / Create Summary | The two options above. |
+| Ask My Meetings… | Ask questions across your transcripts (see below). |
 | Open Latest Notes | Show the most recent recording's folder in Finder. |
 | Open Transcripts Folder | Open `~/ownscribe`. |
 | Tidy Transcripts Folder… | Convert older recordings to one folder each (see above). |
@@ -84,6 +89,18 @@ When the app itself changes, macOS asks for its Microphone and Screen Recording 
 
 From Terminal, the equivalent is `brew update && brew upgrade teamswatcher && teamswatcher-setup`. Run `brew update` first, because Homebrew only checks for new releases about once a day on its own.
 
+## Ask My Meetings
+
+Choose **Ask My Meetings…** from the menu and type a question. TeamsWatcher finds the passages of your transcripts that best match it and has the local model (the same one Create Summary uses) write an answer, citing them as [1], [2] and so on. Under the answer, each source shows the meeting and where in it the passage starts; click it to open that meeting's notes. Nothing leaves your Mac.
+
+- **Name a time to narrow it down:** "today", "yesterday", "this week", "last week", "on Monday", "past 10 days".
+- **Use the words that were said.** Matching is by words, so "go-live date" finds the passage where people said "go-live". Names of people only help if they were said aloud, since transcripts label everyone else as "Them".
+- **Each question stands alone.** It doesn't remember the previous question, so "and what about Friday?" won't work; ask in full.
+- **Speed:** a typical answer takes 20 to 40 seconds on an M1 (most of it is the model reading the passages), and it appears as it's written. The first question downloads the model, about 5 GB, unless Create Summary already did.
+- **It can be wrong.** It only sees the best-matching passages, not every transcript in full. Check the sources before acting on anything important.
+
+From Terminal: `ownscribe ask "what did we decide about the go-live date?"`.
+
 ## Meeting apps
 
 Teams, Zoom and Webex are on by default. To change the list, open **Settings… › Meeting Apps** and check or uncheck apps.
@@ -118,7 +135,7 @@ Choose **Settings…** from the menu (or press ⌘, while the menu is open). Cha
 
 | Tab | What you can change |
 |---|---|
-| **General** | Save Recording and Create Summary; record only the meeting app's audio or everything the Mac plays; how long the mic must be in use before recording starts (10 s) and released before it stops (30 s); notifications |
+| **General** | Save Recording and Create Summary; naming recordings after the meeting's window title; the ⌃⌥B bookmark shortcut; record only the meeting app's audio or everything the Mac plays; how long the mic must be in use before recording starts (10 s) and released before it stops (30 s); notifications |
 | **Meeting Apps** | Which apps start a recording; add or remove other apps |
 | **Transcription** | Your name and the label for everyone else; the languages spoken in your calls; the Whisper model; vocabulary hints such as product, system and client names |
 | **Notes** | The recordings folder; whether to write a notes file and include the transcript in it; an extra copy of each notes file in your work OneDrive or another folder |
@@ -138,6 +155,10 @@ A few settings exist only in the files, such as `extraArgs` (extra ownscribe fla
 **Testing it.** In Teams, go to Settings > Devices > Make a test call. It starts recording just like a real meeting. Or, with no meeting app open, choose **Start Recording Now**, play a video on the Mac, and talk over it. Sound from a TV or another device only reaches your mic, which records it as you, and usually too quietly to transcribe.
 
 **A call wasn't detected.** Join a test call, then choose **Log Audio Processes (Debug)**. The meeting app should be listed with `in=true`. Also check that `in=true` stays on when you mute yourself; if it drops, increase the stop delay in **Settings… › General**.
+
+**The folder has the wrong meeting name, or no name.** During a call, choose **Log Audio Processes (Debug)**. The log lists each meeting app window, and what TeamsWatcher made of it. It reads window titles with the Screen & System Audio Recording permission, so without that permission you get "Microsoft Teams call". To turn this off, uncheck it in **Settings… › General**.
+
+**⌃⌥B does nothing.** Another app may already use that shortcut; the TeamsWatcher log says so at startup. **Bookmark This Moment** in the menu still works.
 
 **Notifications can't be clicked.** Allow notifications for TeamsWatcher in System Settings > Notifications.
 
@@ -168,9 +189,9 @@ Tell people when you're transcribing a call, especially clients. Some places and
 
 | Path | What it is |
 |---|---|
-| `main.swift`, `Settings.swift`, `Info.plist`, `build.sh` | The TeamsWatcher menu bar app and its Settings window |
+| `main.swift`, `Settings.swift`, `Ask.swift`, `Info.plist`, `build.sh` | The TeamsWatcher menu bar app, its Settings window and the Ask My Meetings window |
 | `AppIcon.png`, `tools/make_icon.py` | The app icon and the script that draws it (`python3 tools/make_icon.py AppIcon.png`, needs Pillow) |
-| `ownscribe/` | The ownscribe fork: transcription, labels, notes, `tidy`. See `ownscribe/FORK.md` for how it differs from upstream. |
+| `ownscribe/` | The ownscribe fork: transcription, labels, notes, bookmarks, `ask`, `tidy`. See `ownscribe/FORK.md` for how it differs from upstream. |
 | `ownscribe-config.toml` | Default transcription settings installed by setup |
 | `teamswatcher-setup`, `install.sh`, `uninstall.sh` | Setup and removal |
 | `Formula/teamswatcher.rb` | The Homebrew formula (this repo is its own tap) |

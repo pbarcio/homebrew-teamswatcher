@@ -61,7 +61,11 @@ def format_export(
     summary: str | None,
     source: str = "",
     include_transcript: bool = True,
+    bookmarks: list[float] | None = None,
 ) -> str:
+    from ownscribe.output.bookmarks import clean_offsets, format_bookmarks_section
+
+    bookmarks = clean_offsets(bookmarks, result.duration)
     speakers = []
     for seg in result.segments:
         if seg.speaker and seg.speaker not in speakers:
@@ -77,14 +81,18 @@ def format_export(
     languages = list(dict.fromkeys(seg.language for seg in result.segments if seg.language))
     if len(languages) > 1:
         front.append("languages: [" + ", ".join(_yaml(code) for code in languages) + "]")
+    if bookmarks:
+        front.append(f"bookmarks: {len(bookmarks)}")
     front.append("tags: [meeting-notes]")
     front.append("---")
 
     body = [f"# {title}", ""]
     if summary and summary.strip():
         body += [summary.strip(), ""]
+    if bookmarks:
+        body += [format_bookmarks_section(result, bookmarks), ""]
     if include_transcript and result.segments:
-        transcript = format_transcript(result).replace("# Transcript", "## Transcript", 1)
+        transcript = format_transcript(result, bookmarks).replace("# Transcript", "## Transcript", 1)
         body += [transcript.strip(), ""]
 
     return "\n".join(front) + "\n\n" + "\n".join(body).rstrip() + "\n"

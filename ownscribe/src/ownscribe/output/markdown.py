@@ -23,8 +23,15 @@ def _format_time(seconds: float) -> str:
     return f"{m:02d}:{s:02d}"
 
 
-def format_transcript(result: TranscriptResult) -> str:
-    """Format a transcript result as markdown."""
+def format_transcript(result: TranscriptResult, bookmarks: list[float] | None = None) -> str:
+    """Format a transcript result as markdown.
+
+    *bookmarks* (offsets in seconds) add a "> ★ Bookmark [mm:ss]" line before the
+    segment each one points at.
+    """
+    from ownscribe.output.bookmarks import anchors, clean_offsets, marker_line
+
+    marked = anchors(result.segments, clean_offsets(bookmarks)) if bookmarks else {}
     lines = ["# Transcript\n"]
 
     if result.language:
@@ -34,8 +41,10 @@ def format_transcript(result: TranscriptResult) -> str:
     lines.append("")
 
     current_speaker = None
-    for seg in result.segments:
+    for index, seg in enumerate(result.segments):
         timestamp = f"[{_format_time(seg.start)}]"
+        for offset in marked.get(index, []):
+            lines += ["", marker_line(offset), ""]
 
         if result.has_speakers and seg.speaker != current_speaker:
             current_speaker = seg.speaker
@@ -68,7 +77,7 @@ def parse_transcript(text: str) -> TranscriptResult | None:
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
-        if not line or line.startswith("# "):
+        if not line or line.startswith("# ") or line.startswith("> ★"):
             continue
 
         if line.startswith("**Language:**"):

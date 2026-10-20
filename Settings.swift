@@ -40,6 +40,8 @@ final class SettingsModel: ObservableObject {
     @Published var createSummary = false
     @Published var notifications = true
     @Published var captureAppAudioOnly = true
+    @Published var useWindowTitles = true
+    @Published var bookmarkShortcut = true
     @Published var startDebounceSeconds = 10.0
     @Published var stopGraceSeconds = 30.0
     @Published var meetingApps: [EditableApp] = []
@@ -76,6 +78,8 @@ final class SettingsModel: ObservableObject {
         createSummary = config.createSummary
         notifications = config.notifications
         captureAppAudioOnly = config.captureAppAudioOnly
+        useWindowTitles = config.useWindowTitles
+        bookmarkShortcut = config.bookmarkShortcut
         startDebounceSeconds = config.startDebounceSeconds
         stopGraceSeconds = config.stopGraceSeconds
         let builtInNames = Set(MeetingApp.defaults.map { $0.name })
@@ -267,6 +271,17 @@ struct GeneralTab: View {
                     LabeledContent("Stop once the mic has been released for",
                                    value: "\(Int(model.stopGraceSeconds)) seconds")
                 }
+            }
+            Section {
+                Toggle("Name recordings after the meeting's window title", isOn: $model.useWindowTitles)
+                Toggle("Bookmark shortcut: \(bookmarkShortcutLabel)", isOn: $model.bookmarkShortcut)
+            } header: {
+                Text("During a call")
+            } footer: {
+                Text("Teams names its meeting window after the meeting, so notes get the real meeting name. "
+                     + "The shortcut marks the moment as important; it works in any app while a call is recorded.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
             Section("Notifications") {
                 Toggle("Show notifications", isOn: $model.notifications)
