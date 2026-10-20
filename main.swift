@@ -753,7 +753,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             tint = .systemRed
         } else if !processing.isEmpty {
             symbol = "hourglass"
-        } else if paused {
+        } else if paused || skipCurrentCall {
             symbol = "mic.slash"
         } else {
             symbol = "mic"
@@ -777,6 +777,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             lines.append("Processing \(processing.count) recording(s)…")
         }
         statusLine.title = lines.joined(separator: " · ")
+        button.toolTip = "TeamsWatcher: " + statusLine.title
 
         startItem.isEnabled = current == nil
         stopItem.isEnabled = current != nil
@@ -836,7 +837,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 stopRecording(reason: "\(session.appName) released the mic for \(Int(config.stopGraceSeconds))s")
             }
         } else {
-            if releasedLongEnough { skipCurrentCall = false }
+            if releasedLongEnough, skipCurrentCall {
+                skipCurrentCall = false
+                log("Call ended; auto-start is back on")
+            }
             if let inUse, !paused, !skipCurrentCall, let since = micActiveSince,
                now.timeIntervalSince(since) >= config.startDebounceSeconds {
                 startRecording(app: inUse.app, automatic: true)
@@ -1002,7 +1006,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// Stopping by hand during a call means "enough for this call": auto-start waits until
     /// the meeting app releases the mic. Start Recording Now still works in the meantime.
     @objc func manualStop() {
-        let duringCall = micActiveSince != nil
+        // A recording the call started counts as "during the call" even if the app has
+        // briefly let go of the mic (some apps do while you're muted).
+        let duringCall = micActiveSince != nil || current?.automatic == true
         if duringCall { skipCurrentCall = true }
         stopRecording(reason: duringCall ? "stopped from menu; not restarting until this call ends" : "stopped from menu")
     }
