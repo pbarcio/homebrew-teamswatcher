@@ -22,7 +22,7 @@ mic = true
 [transcription]
 model = "large-v3-turbo"   # fast on the GPU
 languages = ["en", "es"]   # switch freely
-initial_prompt = "MAWM # not a comment, MIF."
+initial_prompt = "Contoso # not a comment, ERP."
 
 [speakers]
 me = ""                    # empty = account name
@@ -58,10 +58,10 @@ def test_multiline_array_is_replaced_whole():
 def test_missing_key_and_missing_section_are_added():
     out = set_value(SAMPLE, "export.copy_to", "auto")
     assert out.endswith('\n[export]\ncopy_to = "auto"\n')
-    out = set_value(SAMPLE, "transcription.hotwords", "MAWM")
+    out = set_value(SAMPLE, "transcription.hotwords", "Contoso")
     lines = out.splitlines()
-    assert lines[lines.index('initial_prompt = "MAWM # not a comment, MIF."') + 1] == 'hotwords = "MAWM"'
-    assert tomllib.loads(out)["transcription"]["hotwords"] == "MAWM"
+    assert lines[lines.index('initial_prompt = "Contoso # not a comment, ERP."') + 1] == 'hotwords = "Contoso"'
+    assert tomllib.loads(out)["transcription"]["hotwords"] == "Contoso"
 
 
 def test_same_key_in_other_sections_is_left_alone():

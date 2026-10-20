@@ -159,10 +159,10 @@ def test_mlx_backend_uses_mixed_mode(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "mlx_whisper.transcribe", types.SimpleNamespace(ModelHolder=holder))
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
 
-    cfg = TranscriptionConfig(backend="mlx", model="large-v3-turbo", languages=["en", "es"], initial_prompt="MAWM.")
+    cfg = TranscriptionConfig(backend="mlx", model="large-v3-turbo", languages=["en", "es"], initial_prompt="Contoso.")
     result = MlxWhisperTranscriber(cfg).transcribe(tmp_path / "recording.them.wav")
 
     assert [(s.language, s.text.strip()) for s in result.segments] == [("en", "en"), ("es", "es")]
     assert [c["language"] for c in transcribe_calls] == ["en", "es"]
-    assert all(c["initial_prompt"] == "MAWM." and c["condition_on_previous_text"] is False for c in transcribe_calls)
+    assert all(c["initial_prompt"] == "Contoso." and c["condition_on_previous_text"] is False for c in transcribe_calls)
     assert result.language == "en, es"

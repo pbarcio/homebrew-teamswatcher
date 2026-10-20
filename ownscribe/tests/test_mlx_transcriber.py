@@ -34,8 +34,8 @@ class TestResolveRepo:
 
 
 def test_prompt_folds_in_hotwords():
-    cfg = TranscriptionConfig(initial_prompt="Manhattan Active WM.", hotwords="MAWM, MIF")
-    assert _prompt(cfg) == "Manhattan Active WM. MAWM, MIF"
+    cfg = TranscriptionConfig(initial_prompt="Contoso ERP.", hotwords="Contoso, ERP")
+    assert _prompt(cfg) == "Contoso ERP. Contoso, ERP"
     assert _prompt(TranscriptionConfig()) is None
 
 

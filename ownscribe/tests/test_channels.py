@@ -77,7 +77,7 @@ class TestEcho:
         assert [s.text for s in drop_echo(me, them)] == ["Yes, I can see it."]
 
     def test_keeps_different_words_at_the_same_time(self):
-        them = [Segment(text="Let's look at the outbound SFTP routers.", start=5.0, end=8.0)]
+        them = [Segment(text="Let's look at the outbound file transfers.", start=5.0, end=8.0)]
         me = [Segment(text="Sorry, which environment?", start=6.0, end=7.0)]
         assert drop_echo(me, them) == me
 

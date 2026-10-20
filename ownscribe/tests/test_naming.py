@@ -29,7 +29,7 @@ class TestParse:
         assert parse_folder_name("2026-10-19 1405 - Sync (2)").title == "Sync"
 
     def test_title_with_dashes(self):
-        assert parse_folder_name("2026-10-19 1405 - MAWM - MIF cutover").title == "MAWM - MIF cutover"
+        assert parse_folder_name("2026-10-19 1405 - ERP - CRM cutover").title == "ERP - CRM cutover"
 
     def test_legacy_style(self):
         parsed = parse_folder_name("2026-02-13_1501_quarterly-planning")
@@ -45,7 +45,7 @@ class TestFormat:
     def test_folder_name(self):
         assert folder_name("2026-10-19 1405", "Spec handoff") == "2026-10-19 1405 - Spec handoff"
         assert folder_name("2026-10-19 1405", "") == "2026-10-19 1405"
-        assert folder_name("2026-10-19 1405", 'MAWM / MIF: "cutover"?') == "2026-10-19 1405 - MAWM MIF cutover"
+        assert folder_name("2026-10-19 1405", 'ERP / CRM: "cutover"?') == "2026-10-19 1405 - ERP CRM cutover"
 
     def test_stamp_and_titles(self):
         assert stamp_for(datetime(2026, 1, 2, 3, 4)) == "2026-01-02 0304"

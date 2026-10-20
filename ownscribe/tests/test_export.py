@@ -45,12 +45,12 @@ class TestResolveExportDir:
 
 class TestNaming:
     def test_started_at_from_output_dir(self):
-        assert started_at(Path("2026-10-19 1405 - MAWM sync")) == datetime(2026, 10, 19, 14, 5)
-        assert started_at(Path("2026-10-19_1405_mawm-sync")) == datetime(2026, 10, 19, 14, 5)
+        assert started_at(Path("2026-10-19 1405 - ERP sync")) == datetime(2026, 10, 19, 14, 5)
+        assert started_at(Path("2026-10-19_1405_erp-sync")) == datetime(2026, 10, 19, 14, 5)
 
     def test_filename_is_safe(self):
-        name = export_filename(datetime(2026, 10, 19, 14, 5), 'MAWM / MIF: "cutover" plan?')
-        assert name == "2026-10-19 1405 - MAWM MIF cutover plan.md"
+        name = export_filename(datetime(2026, 10, 19, 14, 5), 'ERP / CRM: "cutover" plan?')
+        assert name == "2026-10-19 1405 - ERP CRM cutover plan.md"
 
     def test_empty_title(self):
         assert export_filename(datetime(2026, 10, 19, 14, 5), "  ") == "2026-10-19 1405 - Meeting.md"
@@ -59,7 +59,7 @@ class TestNaming:
 class TestFormat:
     def test_front_matter_summary_and_transcript(self):
         text = format_export(
-            title='MAWM "cutover" sync',
+            title='ERP "cutover" sync',
             started=datetime(2026, 10, 19, 14, 5),
             result=_result(),
             summary="## Summary\nWe planned the cutover.",
@@ -67,13 +67,13 @@ class TestFormat:
         )
         lines = text.splitlines()
         assert lines[0] == "---"
-        assert 'title: "MAWM \\"cutover\\" sync"' in lines
+        assert 'title: "ERP \\"cutover\\" sync"' in lines
         assert "date: 2026-10-19" in lines
         assert 'time: "14:05"' in lines
         assert 'duration: "47:12"' in lines
         assert 'source: "Microsoft Teams"' in lines
         assert 'speakers: ["Them", "Pierce Barcio"]' in lines
-        assert '# MAWM "cutover" sync' in lines
+        assert '# ERP "cutover" sync' in lines
         assert "## Summary" in lines
         assert "## Transcript" in lines
         assert "# Transcript" not in lines
