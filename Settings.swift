@@ -43,6 +43,8 @@ final class SettingsModel: ObservableObject {
     @Published var startDebounceSeconds = 10.0
     @Published var stopGraceSeconds = 30.0
     @Published var meetingApps: [EditableApp] = []
+    @Published var newAppName = ""
+    @Published var newAppBundleID = ""
 
     // Transcription (ownscribe config.toml)
     @Published var transcriptionLoaded = false
@@ -114,6 +116,29 @@ final class SettingsModel: ObservableObject {
         }
         transcriptionLoaded = true
         transcriptionError = nil
+    }
+
+    var languagesFooter: String {
+        if languageCodes.count > 1 {
+            return "People can switch languages at any point; each stretch of speech is transcribed in its own language."
+        }
+        return "Everything is transcribed as this one language."
+    }
+
+    var canAddNewApp: Bool {
+        !newAppName.trimmingCharacters(in: .whitespaces).isEmpty
+            && !newAppBundleID.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    func addNewApp() {
+        guard canAddNewApp else { return }
+        let app = MeetingApp(name: newAppName.trimmingCharacters(in: .whitespaces),
+                             enabled: true,
+                             bundlePrefixes: [newAppBundleID.trimmingCharacters(in: .whitespaces)],
+                             pathMarkers: [])
+        meetingApps.append(EditableApp(app: app, isBuiltIn: false))
+        newAppName = ""
+        newAppBundleID = ""
     }
 
     var languageCodes: [String] {
@@ -205,7 +230,7 @@ struct FolderRow: View {
                 Text(path.isEmpty ? "Not set" : path)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .foregroundStyle(path.isEmpty ? .secondary : .primary)
+                    .foregroundColor(path.isEmpty ? Color.secondary : Color.primary)
                 Button("Choose…") {
                     if let chosen = chooseFolder(startingAt: path.isEmpty ? "~" : path) {
                         path = chosen
@@ -253,8 +278,6 @@ struct GeneralTab: View {
 
 struct AppsTab: View {
     @ObservedObject var model: SettingsModel
-    @State private var newName = ""
-    @State private var newBundleID = ""
 
     var body: some View {
         Form {
@@ -289,19 +312,12 @@ struct AppsTab: View {
                     .foregroundStyle(.secondary)
             }
             Section {
-                TextField("Name", text: $newName, prompt: Text("e.g. GoTo Meeting"))
-                TextField("Bundle ID", text: $newBundleID, prompt: Text("e.g. com.logmein.GoToMeeting"))
+                TextField("Name", text: $model.newAppName, prompt: Text("e.g. GoTo Meeting"))
+                TextField("Bundle ID", text: $model.newAppBundleID, prompt: Text("e.g. com.logmein.GoToMeeting"))
                 Button("Add App") {
-                    let app = MeetingApp(name: newName.trimmingCharacters(in: .whitespaces),
-                                         enabled: true,
-                                         bundlePrefixes: [newBundleID.trimmingCharacters(in: .whitespaces)],
-                                         pathMarkers: [])
-                    model.meetingApps.append(EditableApp(app: app, isBuiltIn: false))
-                    newName = ""
-                    newBundleID = ""
+                    model.addNewApp()
                 }
-                .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty
-                          || newBundleID.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(!model.canAddNewApp)
             } header: {
                 Text("Add another app")
             } footer: {
@@ -342,9 +358,7 @@ struct TranscriptionTab: View {
                 } header: {
                     Text("Languages spoken in your calls")
                 } footer: {
-                    Text(model.languageCodes.count > 1
-                         ? "People can switch languages at any point; each stretch of speech is transcribed in its own language."
-                         : "Everything is transcribed as this one language.")
+                    Text(model.languagesFooter)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
